@@ -1,122 +1,208 @@
 import * as THREE from 'three';
-import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { stadiums, seatAngle } from './stadiums.js';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+import {taipeiDome,listSections,sectionBounds,seatPosition,sectionSide,sectionRegion} from './stadiums.js';
+import {buildTaipeiDome} from './dome.js';
 import './style.css';
 
-const stadium = stadiums.taipeiDome;
-const state = { level:'B1', section:113, row:12, seat:8, mode:'overview', labels:true };
-const root = document.getElementById('app');
-root.innerHTML = `
-<header class="topbar"><a class="brand" href="#" aria-label="首頁"><span class="brand-mark">◈</span><span>FIELD<span class="accent">VIEW</span><small>TAIWAN BALLPARKS / 3D</small></span></a><div class="topright"><span class="version">V 0.1 · PROTOTYPE</span><span class="live"><i></i> 3D SIMULATION</span></div></header>
-<main class="layout"><aside class="sidebar">
-  <div class="eyebrow">STADIUM 01 / TAIWAN</div><h1>選一個座位，<br/><em>走進球場。</em></h1><p class="intro">從看台到本壘板，探索臺北大巨蛋的模擬觀賽視角。</p>
-  <div class="stadium-select"><span class="location-icon">⌖</span><span><b>臺北大巨蛋</b><small>TAIPEI DOME · 臺北市</small></span><span class="dropdown">⌄</span></div>
-  <div class="section-title"><span>01</span> 選擇座位 <small>CHOOSE YOUR SEAT</small></div>
-  <label class="label" for="level">座位樓層 <span>LEVEL</span></label><select id="level"></select>
-  <label class="label" for="section">座位區域 <span>SECTION</span></label><select id="section"></select>
-  <div class="two-col"><div><label class="label" for="row">排數 <span>ROW</span></label><input id="row" type="number" min="1" max="40" value="12"/></div><div><label class="label" for="seat">座號 <span>SEAT</span></label><input id="seat" type="number" min="1" max="40" value="8"/></div></div>
-  <button id="seatview" class="primary">進入座位視角 <span>↗</span></button><button id="overview" class="secondary">◎　返回 3D 球場總覽</button>
-  <div class="note"><span>ⓘ</span> 本站為非官方概念模擬。分區位置、排距、高度與座號均為估算，不能作為實際視野或購票依據。</div>
-  <div class="side-footer">NEXT STADIUM <strong>COMING SOON</strong><small>臺灣其他棒球場將陸續加入</small></div>
-</aside>
-<section class="stage"><div class="stage-head"><div><div class="eyebrow">IMMERSIVE STADIUM EXPERIENCE</div><h2>TAIPEI <span>DOME.</span></h2></div><div class="head-meta">25° 02′ N &nbsp; 121° 33′ E <span>● CONCEPT MODEL</span></div></div>
- <div class="viewer" id="viewer"><div id="canvas" aria-label="可拖曳旋轉的 3D 大巨蛋球場"></div><div class="viewer-gradient"></div><div class="viewer-top"><span class="simtag"><i></i> INTERACTIVE 3D</span><div class="viewer-tools"><button id="toggle-roof" title="切換屋頂示意">⌂ <span>屋頂</span></button><button id="reset" title="重設鏡頭">↺ <span>重設</span></button></div></div><div class="viewer-label"><span id="view-title">球場鳥瞰</span><small id="view-subtitle">DRAG TO EXPLORE · SCROLL TO ZOOM</small></div><div class="nav-hint">☞ <span>拖曳旋轉　·　雙指 / 滾輪縮放　·　點選看台</span></div><div class="compass">N <span>✣</span> S</div></div>
- <div class="bottom"><div class="seat-card"><span class="seat-icon">▧</span><span><small>目前模擬位置 / YOUR SEAT</small><strong id="seat-label">B1 · 113 區 · 12 排 · 8 號</strong></span><span class="status">● SIMULATED</span></div><div class="actions"><button id="home-view">球場全景</button><button id="behind-view">本壘後方</button><button id="outfield-view">外野視角</button></div></div>
- </section></main><footer class="page-footer">FIELDVIEW / MADE FOR BASEBALL FANS <span>INDEPENDENT CONCEPT · NOT AFFILIATED WITH TAIPEI DOME</span></footer>`;
+const state={level:'B1',section:113,row:12,seat:8,mode:'overview',roof:false,loading:true};
+const saved=new URLSearchParams(window.location.search);
+if(taipeiDome.tiers.some(t=>t.id===saved.get('level')))state.level=saved.get('level');
+const initialTier=taipeiDome.tiers.find(t=>t.id===state.level);
+if(listSections(initialTier).includes(Number(saved.get('section'))))state.section=Number(saved.get('section'));
+if(saved.has('row'))state.row=Math.max(1,Math.min(40,Number(saved.get('row'))||12));
+if(saved.has('seat'))state.seat=Math.max(1,Math.min(60,Number(saved.get('seat'))||8));
 
-const $ = id => document.getElementById(id);
-const levelSelect = $('level'), sectionSelect=$('section');
-for (const l of stadium.levels) { const o=document.createElement('option');o.value=l.id;o.textContent=l.label;levelSelect.append(o); }
-function sectionOptions(){
-  sectionSelect.innerHTML=''; const lvl=stadium.levels.find(l=>l.id===state.level);
-  if(!lvl.sections.length){sectionSelect.disabled=true;sectionSelect.add(new Option('尚無一般座位分區資料',''));$('seatview').disabled=true;return;}
-  sectionSelect.disabled=false;$('seatview').disabled=false;
-  if(!lvl.sections.includes(state.section)) state.section = lvl.sections[Math.floor(lvl.sections.length/2)];
-  for(const sec of lvl.sections) sectionSelect.add(new Option(`${sec} 區`,sec)); sectionSelect.value=String(state.section);
-  updateLabel();
-}
-function updateLabel(){ $('seat-label').textContent=`${state.level} · ${state.section} 區 · ${state.row} 排 · ${state.seat} 號`; }
-levelSelect.value=state.level; sectionOptions();
+const root=document.getElementById('app');
+root.innerHTML=`
+<header class="header"><a class="logo" href="./" aria-label="FIELDVIEW 3D 首頁"><span class="logo-icon">◈</span><span>FIELDVIEW<span class="logo-3d">3D</span><small>TAIWAN BALLPARK PROJECT</small></span></a><div class="header-right"><span class="location-pill"><span class="dot"></span> TAIPEI DOME</span><span class="version">REBUILD 0.2</span></div></header>
+<main class="shell">
+  <section class="controls-panel" aria-label="座位選擇">
+    <span class="kicker"><span class="kicker-rule"></span> BALLPARK 01 / TAIPEI</span>
+    <h1>從你的座位，<br/><span>看見整座大巨蛋。</span></h1>
+    <p class="lede">依臺北大巨蛋公開座位配置重新建模。旋轉球場、選擇看台區域，再切換成觀眾視角。</p>
+    <div class="venue"><div class="venue-icon">◉</div><div><strong>臺北大巨蛋</strong><span>TAIPEI DOME · BASEBALL ONLY</span></div><b>01 / 01</b></div>
+    <div class="panel-divider"><span>選擇你的座位</span><small>FIND YOUR VIEW</small></div>
+    <div class="control-grid">
+     <label class="field level-field"><span>樓層 <small>LEVEL</small></span><select id="level"></select></label>
+     <label class="field section-field"><span>看台區 <small>SECTION</small></span><select id="section"></select></label>
+     <label class="field"><span>排 <small>ROW · 估算</small></span><input id="row" type="number" min="1" max="40" inputmode="numeric" value="12"/></label>
+     <label class="field"><span>座號 <small>SEAT · 估算</small></span><input id="seat" type="number" min="1" max="60" inputmode="numeric" value="8"/></label>
+    </div>
+    <div class="section-context"><span class="context-dot"></span><span id="section-description">本壘後方 · 內野</span><span id="section-position">B1-113</span></div>
+    <button id="go-seat" class="action-primary">進入座位視角 <span>↗</span></button>
+    <button id="go-bowl" class="action-outline">↺ 返回球場鳥瞰</button>
+    <div class="disclaimer"><b>幾何精度說明</b>分區編號與相對方向參考公開座位圖；階高、排距和座號是視覺重建估算，並非實測或官方 3D CAD，不可直接用來判斷遮蔽或購票。</div>
+    <div class="controls-foot"><span>INDEPENDENT 3D STUDY</span><span>臺灣其他棒球場將陸續加入 ↗</span></div>
+  </section>
+  <section class="explore-panel" aria-label="臺北大巨蛋 3D 模型">
+    <div class="explore-heading"><div><span class="kicker">THE STADIUM / 01</span><h2>TAIPEI <em>DOME</em><span class="title-dot">.</span></h2></div><span class="overview-type">ARCHITECTURAL RECONSTRUCTION<br/>NON-OFFICIAL · BASEBALL</span></div>
+    <div class="viewer" id="viewer">
+      <div class="canvas-container" id="canvas-container"></div>
+      <div class="viewer-vignette"></div>
+      <div class="viewer-top"><div class="scene-status"><span class="dot"></span><span id="mode-label">球場總覽 / OVERVIEW</span></div><div class="toolbar"><button id="roof-toggle" title="顯示或隱藏大巨蛋屋頂鋼架">屋頂鋼架 <span id="roof-flag">OFF</span></button><button id="camera-reset" title="返回預設視角">↺ 重設</button></div></div>
+      <div class="mini-map" id="mini-map"><span>HOME<br/>PLATE</span><i>⌃</i><small>CF</small></div>
+      <div class="loading" id="loading"><div class="loading-spinner"></div><span>正在建立球場 3D 幾何…</span><small>INSTANCED STANDS · ROOF TRUSSES · FIELD</small></div>
+      <div class="viewer-bottom"><div class="viewer-caption"><div class="caption-kicker">FIELDVIEW / TAIPEI DOME</div><strong id="view-title">完整球場 · 俯瞰視角</strong><span id="view-info">拖曳旋轉 · 雙指縮放 · 點選看台</span></div><div class="model-meta"><div><span>SECTIONS</span><b>REAL MAP ORDER</b></div><div><span>CHAIRS</span><b id="chair-count">—</b></div></div></div>
+    </div>
+    <div class="quick-links"><button class="view-button selected" id="view-overview"><span>01</span> 球場全景</button><button class="view-button" id="view-plate"><span>02</span> 本壘後方</button><button class="view-button" id="view-first"><span>03</span> 一壘側</button><button class="view-button" id="view-outfield"><span>04</span> 外野看台</button></div>
+    <div class="info-row"><div class="current"><span class="current-icon">⌖</span><div><small>目前選擇 · SELECTED LOCATION</small><strong id="seat-summary">B1 · 113 區 · 12 排 · 8 號</strong></div></div><div class="model-alert"><span class="dot dim"></span> VISUAL RECONSTRUCTION · ESTIMATED ELEVATIONS</div></div>
+  </section>
+</main><footer class="footer"><span>© FIELDVIEW 3D · TAIPEI DOME STUDY</span><span>座位分區：<a href="https://www.farglorydome.com.tw/park-detail/map/" target="_blank" rel="noopener noreferrer">官方平面圖 ↗</a> &nbsp;|&nbsp; 非官方獨立重建</span></footer>`;
 
-const scene=new THREE.Scene(); scene.background=new THREE.Color(0x102029);scene.fog=new THREE.FogExp2(0x102029,.00175);
-const camera=new THREE.PerspectiveCamera(48,1,.3,1000);camera.position.set(190,155,225);
-const renderer=new THREE.WebGLRenderer({antialias:true,alpha:false,powerPreference:'high-performance'});
-renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
-renderer.outputColorSpace=THREE.SRGBColorSpace;renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.35;
-$('canvas').appendChild(renderer.domElement);
-const controls=new OrbitControls(camera,renderer.domElement); controls.enableDamping=true;controls.dampingFactor=.075;controls.minDistance=16;controls.maxDistance=500;controls.maxPolarAngle=Math.PI*.92;controls.target.set(0,4,0);
-scene.add(new THREE.HemisphereLight(0xd4f0ff,0x253a35,2.5));
-const sunlight=new THREE.DirectionalLight(0xffffff,3.5);sunlight.position.set(-75,150,40);sunlight.castShadow=true;sunlight.shadow.mapSize.set(2048,2048);sunlight.shadow.camera.left=-190;sunlight.shadow.camera.right=190;sunlight.shadow.camera.top=190;sunlight.shadow.camera.bottom=-190;scene.add(sunlight);
-const material=(color,roughness=1)=>new THREE.MeshStandardMaterial({color,roughness,side:THREE.DoubleSide});
-const grass=material(0x236a49), dirt=material(0xa97042), lines=new THREE.LineBasicMaterial({color:0xf9ead1});
-function plane(w,h,mat,x=0,y=0,z=0){let m=new THREE.Mesh(new THREE.PlaneGeometry(w,h),mat);m.rotation.x=-Math.PI/2;m.position.set(x,y,z);m.receiveShadow=true;scene.add(m);return m;}
-function box(w,h,d,mat,x,y,z){let m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat);m.position.set(x,y,z);m.castShadow=true;m.receiveShadow=true;scene.add(m);return m;}
-function ringSector(inner,outer,a0,a1,y0,y1,mat,segments=24){
- const pos=[],idx=[];for(let j=0;j<=1;j++){const r=j?outer:inner;for(let i=0;i<=segments;i++){const a=a0+(a1-a0)*i/segments;pos.push(Math.sin(a)*r,y0+(r-inner)/(outer-inner)*(y1-y0),Math.cos(a)*r);}}
- for(let i=0;i<segments;i++){let a=i,b=i+1,c=segments+1+i,d=c+1;idx.push(a,b,c,b,d,c);}
- const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(pos,3));geo.setIndex(idx);geo.computeVertexNormals();const mesh=new THREE.Mesh(geo,mat);mesh.receiveShadow=true;scene.add(mesh);return mesh;
+const $=id=>document.getElementById(id);
+const level=$('level'),section=$('section');
+for (const t of taipeiDome.tiers) level.add(new Option(t.label,t.id));
+level.value=state.level;
+$('row').value=String(state.row);$('seat').value=String(state.seat);
+
+function updateUI(){
+ const t=taipeiDome.tiers.find(t=>t.id===state.level);
+ if(!listSections(t).includes(Number(state.section)))state.section=listSections(t)[0];
+ section.innerHTML='';for(const n of listSections(t))section.add(new Option(`${n} 區 · ${sectionSide(t,n)}`,n));
+ section.value=String(state.section);
+ $('section-description').textContent=`${sectionSide(t,state.section)} · ${sectionRegion(state.section)}`;
+ $('section-position').textContent=`${state.level}–${state.section}`;
+ $('seat-summary').textContent=`${state.level} · ${state.section} 區 · ${state.row} 排 · ${state.seat} 號`;
+ let share=new URL(window.location.href);share.searchParams.set('level',state.level);share.searchParams.set('section',state.section);
+ share.searchParams.set('row',state.row);share.searchParams.set('seat',state.seat);
+ window.history.replaceState(null,'',share);
 }
-// Infield diamond: home at (0,0,0), center field toward +Z.
-plane(330,330,material(0x152a33),0,-1,25);
-const field=new THREE.Mesh(new THREE.CircleGeometry(74,100),grass);field.rotation.x=-Math.PI/2;field.position.set(0,.06,28);field.receiveShadow=true;scene.add(field);
-const infield=new THREE.Mesh(new THREE.ShapeGeometry((()=>{const s=new THREE.Shape();s.moveTo(0,0);s.lineTo(30,30);s.lineTo(0,60);s.lineTo(-30,30);s.closePath();return s;})()),dirt);infield.rotation.x=-Math.PI/2;infield.position.set(0,.13,0);scene.add(infield);
-const innerGrass=new THREE.Mesh(new THREE.CircleGeometry(21,4),grass);innerGrass.rotation.x=-Math.PI/2;innerGrass.rotation.z=Math.PI/4;innerGrass.position.set(0,.17,30);scene.add(innerGrass);
-for (const [x,z] of [[0,0],[-30,30],[0,60],[30,30]]) box(2,.16,2,material(0xffffff),x,.35,z);
-const mound=new THREE.Mesh(new THREE.CylinderGeometry(6,6,.28,32),dirt);mound.position.set(0,.24,30);scene.add(mound);
-function line(points,color=0xffffff){let pts=points.map(p=>new THREE.Vector3(...p));let o=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color}));scene.add(o);}
-line([[0,.31,0],[-66,.31,66]]);line([[0,.31,0],[66,.31,66]]);
-for(let r=0;r<9;r++){const z=20+r*5;let st=-Math.sqrt(Math.max(0,74**2-(z-28)**2)),en=-st;line([[st,.1,z],[en,.1,z]],r%2?0x2c8159:0x246d4e);}
-// Dugouts and outfield wall
-box(30,4,9,material(0x1d343a),-55,2,0);box(30,4,9,material(0x1d343a),55,2,0);
-const wall=new THREE.Mesh(new THREE.CylinderGeometry(77,77,8,100,1,true,0,Math.PI*2),material(0x103e3b));wall.position.set(0,3.8,20);scene.add(wall);
-// Concentric seating decks, separated by level and colored alternating groups
-const deckMaterials=[material(0x3e6470),material(0x557b86),material(0x355664),material(0x436c78),material(0x64838a)];
-const sectionMeshes=[];
-const decks=[{inner:80,outer:106,y0:8,y1:21,level:'B1'}, {inner:108,outer:125,y0:28,y1:38,level:'L2'}, {inner:130,outer:147,y0:43,y1:56,level:'L4'}, {inner:151,outer:171,y0:60,y1:78,level:'L5'}];
-for(const [deckIndex,deck] of decks.entries()) {
- ringSector(deck.inner,deck.outer,-Math.PI,Math.PI,deck.y0,deck.y1,material(0x1c3540),110);
- for(let i=0;i<56;i++){
-   let start=-Math.PI+i*Math.PI*2/56+.006, end=-Math.PI+(i+1)*Math.PI*2/56-.006;
-   let mesh=ringSector(deck.inner+1,deck.outer-1,start,end,deck.y0+.45,deck.y1-.7,deckMaterials[(i%4+deckIndex)%deckMaterials.length],5);
-   mesh.userData={deck:deck.level,angle:(start+end)/2};sectionMeshes.push(mesh);
-   if(i%7===0) {ringSector(deck.inner,deck.outer,start-.009,start+.012,deck.y0+.6,deck.y1+1,material(0xb6bcc0),2);}
+updateUI();
+
+const scene=new THREE.Scene();scene.background=new THREE.Color(0x162329);
+scene.fog=new THREE.FogExp2(0x162329,.00038);
+const camera=new THREE.PerspectiveCamera(47,1,.18,1600);
+const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.65));
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.45;
+renderer.shadowMap.enabled=false; // seat geometry + mesh count favor mobile performance
+$('canvas-container').appendChild(renderer.domElement);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;controls.dampingFactor=.085;controls.enablePan=false;
+controls.minDistance=30;controls.maxDistance=530;controls.minPolarAngle=.1;controls.maxPolarAngle=Math.PI*.78;
+const sky=new THREE.HemisphereLight(0xdaeaf4,0x647474,3.05);scene.add(sky);
+const key=new THREE.DirectionalLight(0xe4f2f2,3.15);key.position.set(-72,150,-45);scene.add(key);
+const fill=new THREE.DirectionalLight(0xb8d6c9,1.55);fill.position.set(75,115,125);scene.add(fill);
+
+let dome;
+try {
+ dome=buildTaipeiDome(scene);
+ $('loading').classList.add('hidden');
+ $('chair-count').textContent=new Intl.NumberFormat('en-US').format(dome.chairs);
+} catch(error){
+ console.error('[FIELDVIEW] 3D scene build failed:',error);
+ $('loading').innerHTML='<strong>3D 場景載入失敗</strong><p>請重新整理頁面，或使用較新的 Safari / Chrome。</p>';
+ throw error;
+}
+function mark(){dome.select(state.level,state.section,state.row,state.seat);}
+mark();
+
+const presets={
+ overview:{eye:[194,166,-215],look:[0,27,18],heading:'球場全景 · 俯瞰視角',mode:'球場總覽 / OVERVIEW'},
+ plate:{eye:[0,45,-135],look:[0,9,10],heading:'本壘後方 · 看向中外野',mode:'本壘後方 / HOME PLATE'},
+ first:{eye:[131,41,-43],look:[0,6,5],heading:'一壘側 · 沿著內野',mode:'一壘側 / FIRST BASE'},
+ outfield:{eye:[0,31,141],look:[0,8,-29],heading:'中外野 · 看向本壘',mode:'外野 / CENTER FIELD'}
+};
+camera.position.set(...presets.overview.eye);controls.target.set(...presets.overview.look);camera.lookAt(controls.target);
+let tween=null,yaw=0,pitch=0,mouseDown=null;
+function toggleRoof(yes){state.roof=yes;dome.roof.visible=yes;dome.roofCutaway.visible=!yes;$('roof-flag').textContent=yes?'ON':'OFF';$('roof-toggle').classList.toggle('on',yes);}
+function setButtons(key){document.querySelectorAll('.view-button').forEach(el=>el.classList.toggle('selected',el.id===`view-${key}`));}
+function move(mode){
+ state.mode=mode;
+ let eye,target,title,modeLabel;
+ if(mode==='seat') {
+   const tier=taipeiDome.tiers.find(t=>t.id===state.level);
+   const p=seatPosition(tier,state.section,state.row,state.seat);
+   const radiusOffset=0.23;
+   eye=V(p.x-Math.sin(p.angle)*radiusOffset,p.y,p.z-Math.cos(p.angle)*radiusOffset);
+   target=V(0,3,-18);
+   title=`${state.level} · ${state.section} 區｜座位模擬`;
+   modeLabel='FIRST-PERSON / SEAT VIEW';
+   toggleRoof(true);
+   dome.marker.visible=false;
+   setButtons('none');
+ }else{
+   const preset=presets[mode];eye=V(...preset.eye);target=V(...preset.look);title=preset.heading;modeLabel=preset.mode;
+   if(mode==='overview')toggleRoof(false);else toggleRoof(true);
+   dome.marker.visible=true;
+   setButtons(mode);
  }
- // Thin continuous fascia
- const fascia=new THREE.Mesh(new THREE.CylinderGeometry(deck.inner,deck.inner,1.65,110,1,true),material(deckIndex%2?0x142a34:0x223d48));fascia.position.y=deck.y0+.4;scene.add(fascia);
+ $('mode-label').textContent=modeLabel;$('view-title').textContent=title;
+ $('view-info').textContent=mode==='seat'?'拖曳四周環視 · 座位高度為估算':'拖曳旋轉 · 雙指縮放 · 點選看台';
+ controls.enabled=false;
+ const lookMatrix=new THREE.Matrix4().lookAt(eye,target,V(0,1,0));const quaternion=new THREE.Quaternion().setFromRotationMatrix(lookMatrix);
+ tween={fromEye:camera.position.clone(),toEye:eye,fromQuat:camera.quaternion.clone(),toQuat:quaternion,target,mode,start:performance.now()};
 }
-// Structure, scoreboard, architectural roof outline
-for(let i=0;i<40;i++){const a=i/40*Math.PI*2,r=178;box(2,88,2,material(0x63767c),r*Math.sin(a),43,r*Math.cos(a));}
-const roofGroup=new THREE.Group(); scene.add(roofGroup);
-for(let j=0;j<8;j++){const r=177-j*14;const tor=new THREE.Mesh(new THREE.TorusGeometry(r,1.45,9,120),material(0x7a9296,.6));tor.rotation.x=Math.PI/2;tor.position.y=91+j*2;roofGroup.add(tor);}
-for(let i=0;i<18;i++){const a=i/18*Math.PI*2;let pts=[new THREE.Vector3(Math.sin(a)*178,89,Math.cos(a)*178),new THREE.Vector3(0,111,0)];let beam=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x546e76}));roofGroup.add(beam);}
-const scoreboard=box(39,17,2,material(0x080f15),0,34,96);const screen=box(34,12,.15,new THREE.MeshBasicMaterial({color:0x176e74}),0,34,94.85);
-// Show selected section as cyan marker, projected onto approximate inner edge of selected level
-const marker=new THREE.Mesh(new THREE.SphereGeometry(2.2,18,12),new THREE.MeshBasicMaterial({color:0x6df2ce}));scene.add(marker);
-const markerRing=new THREE.Mesh(new THREE.TorusGeometry(4,0.34,8,32),new THREE.MeshBasicMaterial({color:0x6df2ce}));markerRing.rotation.x=Math.PI/2;scene.add(markerRing);
-const targets={overview:{position:new THREE.Vector3(190,155,225),look:new THREE.Vector3(0,25,15)}};
-let cameraTween=null;
-function moveCamera(pos,look){ cameraTween={fromPos:camera.position.clone(),toPos:pos.clone(),fromLook:controls.target.clone(),toLook:look.clone(),start:performance.now()}; }
-function markerPosition(){const lvl=stadium.levels.find(l=>l.id===state.level);const angle=seatAngle(state.section);const r=state.level==='B1'?88:state.level==='L2'?114:state.level==='L4'?137:159;const height=(state.level==='B1'?9:state.level==='L2'?29:state.level==='L4'?45:62)+Math.min(state.row,35)*.33;
- return new THREE.Vector3(Math.sin(angle)*r,height,Math.cos(angle)*r+20);
+function updateSeat(){updateUI();mark();if(state.mode==='seat')move('seat');}
+level.onchange=()=>{state.level=level.value;state.section=listSections(taipeiDome.tiers.find(t=>t.id===state.level))[0];updateSeat();};
+section.onchange=()=>{state.section=Number(section.value);updateSeat();};
+for(const id of ['row','seat'])$(id).onchange=()=>{
+ const el=$(id);const max=id==='row'?40:60;
+ state[id]=Math.min(max,Math.max(1,Math.floor(Number(el.value)||1)));el.value=state[id];updateSeat();
+};
+$('go-seat').onclick=()=>move('seat');$('go-bowl').onclick=()=>move('overview');
+$('view-overview').onclick=()=>move('overview');$('view-plate').onclick=()=>move('plate');
+$('view-first').onclick=()=>move('first');$('view-outfield').onclick=()=>move('outfield');
+$('camera-reset').onclick=()=>move('overview');$('roof-toggle').onclick=()=>toggleRoof(!state.roof);
+
+// Hit-test the *actual sector meshes* instead of picking the nearest guessed angle.
+const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();
+const canvas=renderer.domElement;
+canvas.addEventListener('pointerdown',e=>{mouseDown={x:e.clientX,y:e.clientY,pointerId:e.pointerId};});
+canvas.addEventListener('pointermove',e=>{
+ if(!mouseDown||state.mode!=='seat'||tween)return;
+ if(e.pointerId!==mouseDown.pointerId)return;
+ const dx=e.clientX-mouseDown.x,dy=e.clientY-mouseDown.y;
+ yaw-=dx*.004;pitch-=dy*.004;
+ pitch=Math.min(1.42,Math.max(-1.42,pitch));
+ camera.rotation.order='YXZ';camera.rotation.set(pitch,yaw,0,'YXZ');
+ mouseDown.x=e.clientX;mouseDown.y=e.clientY;
+});
+canvas.addEventListener('pointerup',e=>{
+ if(!mouseDown)return;
+ const offset=Math.hypot(e.clientX-mouseDown.x,e.clientY-mouseDown.y);
+ // Seat mode uses drag-look; just clear the pointer.
+ if(state.mode==='seat'){mouseDown=null;return;}
+ mouseDown=null;
+ if(offset>7)return;
+ const b=canvas.getBoundingClientRect();mouse.set((e.clientX-b.left)/b.width*2-1,-(e.clientY-b.top)/b.height*2+1);
+ raycaster.setFromCamera(mouse,camera);
+ const hits=raycaster.intersectObjects(dome.hitMeshes,false);
+ if(!hits.length)return;
+ const obj=hits[0].object.userData;
+ state.level=obj.tier;state.section=obj.section;level.value=state.level;
+ updateSeat();
+});
+canvas.addEventListener('pointercancel',()=>{mouseDown=null;});
+window.addEventListener('keydown',e=>{if(e.key==='Escape'&&state.mode==='seat')move('overview');});
+
+let width=0,height=0;
+function resize(){
+ const container=$('canvas-container'),w=container.clientWidth,h=container.clientHeight;
+ if(!w||!h||w===width&&h===height)return;
+ width=w;height=h;camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h,false);
 }
-function updateMarker(){const p=markerPosition();marker.position.copy(p);markerRing.position.set(p.x,p.y-.7,p.z);}
-function cameraMode(mode){state.mode=mode; let pos,look;
- if(mode==='seat'){pos=markerPosition().clone().add(new THREE.Vector3(0,1.8,0));look=new THREE.Vector3(0,4,25);controls.minDistance=1;controls.maxDistance=500;controls.maxPolarAngle=Math.PI;}
- else if(mode==='behind'){pos=new THREE.Vector3(0,42,-145);look=new THREE.Vector3(0,3,29);}
- else if(mode==='outfield'){pos=new THREE.Vector3(0,34,171);look=new THREE.Vector3(0,6,13);}
- else{pos=new THREE.Vector3(190,155,225);look=new THREE.Vector3(0,25,15);}
- moveCamera(pos,look);$('view-title').textContent=mode==='seat'?`${state.level} · ${state.section} 區模擬視野`:mode==='behind'?'本壘後方':mode==='outfield'?'外野看台':'球場鳥瞰';$('view-subtitle').textContent=mode==='seat'?'ESTIMATED VIEW · NOT SURVEY ACCURATE':'DRAG TO EXPLORE · SCROLL TO ZOOM';
+new ResizeObserver(resize).observe($('canvas-container'));resize();
+function render(t){
+ requestAnimationFrame(render);
+ if(tween){
+  const fraction=Math.min(1,(t-tween.start)/950),p=1-(1-fraction)**3;
+  camera.position.lerpVectors(tween.fromEye,tween.toEye,p);
+  camera.quaternion.copy(tween.fromQuat).slerp(tween.toQuat,p);
+  if(fraction===1){
+    if(tween.mode==='seat'){
+      const euler=new THREE.Euler().setFromQuaternion(camera.quaternion,'YXZ');yaw=euler.y;pitch=euler.x;
+      camera.rotation.order='YXZ';
+    }else{controls.target.copy(tween.target);controls.enabled=true;controls.update();}
+    tween=null;
+  }
+ }else if(state.mode!=='seat')controls.update();
+ if(state.mode!=='seat'&&dome.marker.visible){
+  dome.marker.rotation.y+=.004;
+  dome.marker.children[0].scale.setScalar(1+.10*Math.sin(t*.002));
+ }
+ renderer.render(scene,camera);
 }
-levelSelect.addEventListener('change',()=>{state.level=levelSelect.value;sectionOptions();updateMarker();if(state.mode==='seat')cameraMode('seat');});
-sectionSelect.addEventListener('change',()=>{state.section=Number(sectionSelect.value);updateLabel();updateMarker();if(state.mode==='seat')cameraMode('seat');});
-for(const id of ['row','seat']) $(id).addEventListener('input',()=>{state[id]=Math.min(40,Math.max(1,Number($(id).value)||1));updateLabel();updateMarker();if(state.mode==='seat')cameraMode('seat');});
-$('seatview').onclick=()=>cameraMode('seat');$('overview').onclick=()=>cameraMode('overview');$('reset').onclick=()=>cameraMode('overview');$('home-view').onclick=()=>cameraMode('overview');$('behind-view').onclick=()=>cameraMode('behind');$('outfield-view').onclick=()=>cameraMode('outfield');
-$('toggle-roof').onclick=()=>{roofGroup.visible=!roofGroup.visible;$('toggle-roof').classList.toggle('active',roofGroup.visible);};
-// Click a deck to choose its closest angular section; stays in stadium-local data model.
-const raycaster=new THREE.Raycaster(),pointer=new THREE.Vector2();let down=null;
-renderer.domElement.addEventListener('pointerdown',e=>{down={x:e.clientX,y:e.clientY};});
-renderer.domElement.addEventListener('pointerup',e=>{if(!down||Math.hypot(e.clientX-down.x,e.clientY-down.y)>7)return;down=null;let rect=renderer.domElement.getBoundingClientRect();pointer.set((e.clientX-rect.left)/rect.width*2-1,-(e.clientY-rect.top)/rect.height*2+1);raycaster.setFromCamera(pointer,camera);let hits=raycaster.intersectObjects(sectionMeshes);if(!hits.length)return;let {deck,angle}=hits[0].object.userData;state.level=deck;levelSelect.value=deck;let l=stadium.levels.find(l=>l.id===deck);state.section=l.sections.reduce((best,n)=>Math.abs(angleDiff(seatAngle(n),angle))<Math.abs(angleDiff(seatAngle(best),angle))?n:best,l.sections[0]);sectionOptions();updateMarker();});
-function angleDiff(a,b){return Math.atan2(Math.sin(a-b),Math.cos(a-b));}
-updateMarker();
-const resizeObserver=new ResizeObserver(()=>{const el=$('canvas'),w=el.clientWidth,h=el.clientHeight;if(w&&h){camera.aspect=w/h;camera.updateProjectionMatrix();renderer.setSize(w,h,false);}});resizeObserver.observe($('canvas'));
-function animate(t){requestAnimationFrame(animate);if(cameraTween){let k=Math.min(1,(t-cameraTween.start)/850),ease=1-(1-k)**3;camera.position.lerpVectors(cameraTween.fromPos,cameraTween.toPos,ease);controls.target.lerpVectors(cameraTween.fromLook,cameraTween.toLook,ease);if(k===1) cameraTween=null;}controls.update();renderer.render(scene,camera);}requestAnimationFrame(animate);
+requestAnimationFrame(render);

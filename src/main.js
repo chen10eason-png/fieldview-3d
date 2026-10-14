@@ -1,10 +1,10 @@
 import * as THREE from 'three';
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
-import {taipeiDome,listSections,sectionBounds,seatPosition,sectionSide,sectionRegion} from './stadiums.js';
+import {taipeiDome,listSections,sectionBounds,seatPosition,sectionSide,sectionRegion,approxSeatCount} from './stadiums.js';
 import {buildTaipeiDome} from './dome.js';
 import './style.css';
 
-const state={level:'B1',section:113,row:12,seat:8,mode:'overview',roof:false,loading:true};
+const state={level:'IN1',section:113,row:12,seat:8,mode:'overview',roof:false,loading:true};
 const saved=new URLSearchParams(window.location.search);
 if(taipeiDome.tiers.some(t=>t.id===saved.get('level')))state.level=saved.get('level');
 const initialTier=taipeiDome.tiers.find(t=>t.id===state.level);
@@ -14,7 +14,7 @@ if(saved.has('seat'))state.seat=Math.max(1,Math.min(60,Number(saved.get('seat'))
 
 const root=document.getElementById('app');
 root.innerHTML=`
-<header class="header"><a class="logo" href="./" aria-label="FIELDVIEW 3D 首頁"><span class="logo-icon">◈</span><span>FIELDVIEW<span class="logo-3d">3D</span><small>TAIWAN BALLPARK PROJECT</small></span></a><div class="header-right"><span class="location-pill"><span class="dot"></span> TAIPEI DOME</span><span class="version">REBUILD 0.2</span></div></header>
+<header class="header"><a class="logo" href="./" aria-label="FIELDVIEW 3D 首頁"><span class="logo-icon">◈</span><span>FIELDVIEW<span class="logo-3d">3D</span><small>TAIWAN BALLPARK PROJECT</small></span></a><div class="header-right"><span class="location-pill"><span class="dot"></span> TAIPEI DOME</span><span class="version">REBUILD 0.3 · GEOMETRY STUDY</span></div></header>
 <main class="shell">
   <section class="controls-panel" aria-label="座位選擇">
     <span class="kicker"><span class="kicker-rule"></span> BALLPARK 01 / TAIPEI</span>
@@ -23,12 +23,12 @@ root.innerHTML=`
     <div class="venue"><div class="venue-icon">◉</div><div><strong>臺北大巨蛋</strong><span>TAIPEI DOME · BASEBALL ONLY</span></div><b>01 / 01</b></div>
     <div class="panel-divider"><span>選擇你的座位</span><small>FIND YOUR VIEW</small></div>
     <div class="control-grid">
-     <label class="field level-field"><span>樓層 <small>LEVEL</small></span><select id="level"></select></label>
+     <label class="field level-field"><span>看台層級 <small>DECK</small></span><select id="level"></select></label>
      <label class="field section-field"><span>看台區 <small>SECTION</small></span><select id="section"></select></label>
      <label class="field"><span>排 <small>ROW · 估算</small></span><input id="row" type="number" min="1" max="40" inputmode="numeric" value="12"/></label>
      <label class="field"><span>座號 <small>SEAT · 估算</small></span><input id="seat" type="number" min="1" max="60" inputmode="numeric" value="8"/></label>
     </div>
-    <div class="section-context"><span class="context-dot"></span><span id="section-description">本壘後方 · 內野</span><span id="section-position">B1-113</span></div>
+    <div class="section-context"><span class="context-dot"></span><span id="section-description">本壘後方 · 內野</span><span id="section-position">B1 · 113</span></div>
     <button id="go-seat" class="action-primary">進入座位視角 <span>↗</span></button>
     <button id="go-bowl" class="action-outline">↺ 返回球場鳥瞰</button>
     <div class="disclaimer"><b>幾何精度說明</b>分區編號與相對方向參考公開座位圖；階高、排距和座號是視覺重建估算，並非實測或官方 3D CAD，不可直接用來判斷遮蔽或購票。</div>
@@ -39,17 +39,18 @@ root.innerHTML=`
     <div class="viewer" id="viewer">
       <div class="canvas-container" id="canvas-container"></div>
       <div class="viewer-vignette"></div>
-      <div class="viewer-top"><div class="scene-status"><span class="dot"></span><span id="mode-label">球場總覽 / OVERVIEW</span></div><div class="toolbar"><button id="roof-toggle" title="顯示或隱藏大巨蛋屋頂鋼架">屋頂鋼架 <span id="roof-flag">OFF</span></button><button id="camera-reset" title="返回預設視角">↺ 重設</button></div></div>
-      <div class="mini-map" id="mini-map"><span>HOME<br/>PLATE</span><i>⌃</i><small>CF</small></div>
+      <div class="viewer-top"><div class="scene-status"><span class="dot"></span><span id="mode-label">球場總覽 / OVERVIEW</span></div><div class="toolbar"><button id="roof-toggle" title="切換外觀完整屋頂與可觀看球場的剖面">完整外觀 <span id="roof-flag">OFF</span></button><button id="camera-reset" title="返回預設視角">↺ 重設</button></div></div>
+      <div class="mini-map" id="mini-map"><svg viewBox="0 0 120 140" aria-label="球場馬蹄形看台配置示意"><path d="M8 40 C10 78 34 118 60 119 C86 118 110 78 112 40" fill="none" stroke="#9bb4b1" stroke-width="9"/><path d="M12 40 C14 77 38 108 60 110 C82 108 106 77 108 40" fill="none" stroke="#70edba" stroke-width="6"/><path d="M12 38 Q60 -29 108 38" fill="none" stroke="#91aaa9" stroke-width="8"/><path d="M60 84 L23 39 Q60 -12 97 39Z" fill="#327d4c" stroke="#ad563b" stroke-width="5"/><circle cx="60" cy="84" r="3.2" fill="#f5f6f2"/><text x="60" y="135" text-anchor="middle" font-size="10" fill="#d0e8dd">HOME</text></svg></div>
       <div class="loading" id="loading"><div class="loading-spinner"></div><span>正在建立球場 3D 幾何…</span><small>INSTANCED STANDS · ROOF TRUSSES · FIELD</small></div>
       <div class="viewer-bottom"><div class="viewer-caption"><div class="caption-kicker">FIELDVIEW / TAIPEI DOME</div><strong id="view-title">完整球場 · 俯瞰視角</strong><span id="view-info">拖曳旋轉 · 雙指縮放 · 點選看台</span></div><div class="model-meta"><div><span>SECTIONS</span><b>REAL MAP ORDER</b></div><div><span>CHAIRS</span><b id="chair-count">—</b></div></div></div>
     </div>
-    <div class="quick-links"><button class="view-button selected" id="view-overview"><span>01</span> 球場全景</button><button class="view-button" id="view-plate"><span>02</span> 本壘後方</button><button class="view-button" id="view-first"><span>03</span> 一壘側</button><button class="view-button" id="view-outfield"><span>04</span> 外野看台</button></div>
-    <div class="info-row"><div class="current"><span class="current-icon">⌖</span><div><small>目前選擇 · SELECTED LOCATION</small><strong id="seat-summary">B1 · 113 區 · 12 排 · 8 號</strong></div></div><div class="model-alert"><span class="dot dim"></span> VISUAL RECONSTRUCTION · ESTIMATED ELEVATIONS</div></div>
+    <div class="quick-links"><button class="view-button selected" id="view-overview"><span>01</span> 球場全景</button><button class="view-button" id="view-plate"><span>02</span> 本壘後方</button><button class="view-button" id="view-first"><span>03</span> 一壘側</button><button class="view-button" id="view-outfield"><span>04</span> 外野看台</button><button class="view-button" id="view-exterior"><span>05</span> 建築外觀</button></div>
+    <div class="info-row"><div class="current"><span class="current-icon">⌖</span><div><small>目前選擇 · SELECTED LOCATION</small><strong id="seat-summary">內野下層 · 113 區 · 12 排 · 8 號</strong></div></div><div class="model-alert"><span class="dot dim"></span> VISUAL RECONSTRUCTION · ESTIMATED ELEVATIONS</div></div>
   </section>
 </main><footer class="footer"><span>© FIELDVIEW 3D · TAIPEI DOME STUDY</span><span>座位分區：<a href="https://www.farglorydome.com.tw/park-detail/map/" target="_blank" rel="noopener noreferrer">官方平面圖 ↗</a> &nbsp;|&nbsp; 非官方獨立重建</span></footer>`;
 
 const $=id=>document.getElementById(id);
+const displayDeck=t=>t.id==='IN1'||t.id==='OF1'?'B1':t.id==='IN2'||t.id==='OF2'?'L2':t.id==='VIP'?'VIP':t.id==='UP4'?'4xx':'5xx';
 const level=$('level'),section=$('section');
 for (const t of taipeiDome.tiers) level.add(new Option(t.label,t.id));
 level.value=state.level;
@@ -57,12 +58,16 @@ $('row').value=String(state.row);$('seat').value=String(state.seat);
 
 function updateUI(){
  const t=taipeiDome.tiers.find(t=>t.id===state.level);
+ state.row=Math.max(1,Math.min(t.rows,Number(state.row)||1));
+ $('row').max=String(t.rows);$('row').value=String(state.row);
  if(!listSections(t).includes(Number(state.section)))state.section=listSections(t)[0];
+ state.seat=Math.max(1,Math.min(approxSeatCount(t,state.section,state.row),Number(state.seat)||1));
+ $('seat').max=String(approxSeatCount(t,state.section,state.row));$('seat').value=String(state.seat);
  section.innerHTML='';for(const n of listSections(t))section.add(new Option(`${n} 區 · ${sectionSide(t,n)}`,n));
  section.value=String(state.section);
  $('section-description').textContent=`${sectionSide(t,state.section)} · ${sectionRegion(state.section)}`;
- $('section-position').textContent=`${state.level}–${state.section}`;
- $('seat-summary').textContent=`${state.level} · ${state.section} 區 · ${state.row} 排 · ${state.seat} 號`;
+ $('section-position').textContent=`${displayDeck(t)} · ${state.section}`;
+ $('seat-summary').textContent=`${t.label.split(' · ')[0]} · ${state.section} 區 · ${state.row} 排 · ${state.seat} 號`;
  let share=new URL(window.location.href);share.searchParams.set('level',state.level);share.searchParams.set('section',state.section);
  share.searchParams.set('row',state.row);share.searchParams.set('seat',state.seat);
  window.history.replaceState(null,'',share);
@@ -72,7 +77,13 @@ updateUI();
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x162329);
 scene.fog=new THREE.FogExp2(0x162329,.00038);
 const camera=new THREE.PerspectiveCamera(47,1,.18,1600);
-const renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});
+let renderer;
+try{renderer=new THREE.WebGLRenderer({antialias:true,powerPreference:'high-performance'});}
+catch(error){
+ console.error('[FIELDVIEW] WebGL initialization error:',error);
+ $('loading').innerHTML='<strong>3D 顯示無法啟動</strong><p>請確認 Safari / Chrome 已啟用 WebGL，重新整理後再試。</p>';
+ throw error;
+}
 renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,1.65));
 renderer.outputColorSpace=THREE.SRGBColorSpace;
 renderer.toneMapping=THREE.ACESFilmicToneMapping;
@@ -100,14 +111,15 @@ function mark(){dome.select(state.level,state.section,state.row,state.seat);}
 mark();
 
 const presets={
- overview:{eye:[194,166,-215],look:[0,27,18],heading:'球場全景 · 俯瞰視角',mode:'球場總覽 / OVERVIEW'},
- plate:{eye:[0,45,-135],look:[0,9,10],heading:'本壘後方 · 看向中外野',mode:'本壘後方 / HOME PLATE'},
- first:{eye:[131,41,-43],look:[0,6,5],heading:'一壘側 · 沿著內野',mode:'一壘側 / FIRST BASE'},
- outfield:{eye:[0,31,141],look:[0,8,-29],heading:'中外野 · 看向本壘',mode:'外野 / CENTER FIELD'}
+ overview:{eye:[133,101,-149],look:[0,25,33],heading:'球場全景 · 俯瞰視角',mode:'球場總覽 / OVERVIEW'},
+ plate:{eye:[0,38,-99],look:[0,10,56],heading:'本壘後方 · 看向中外野',mode:'本壘後方 / HOME PLATE'},
+ first:{eye:[103,38,-13],look:[0,8,41],heading:'一壘側 · 沿著內野',mode:'一壘側 / FIRST BASE'},
+ outfield:{eye:[0,24,151],look:[0,7,-8],heading:'中外野 · 看向本壘',mode:'外野 / CENTER FIELD'},
+ exterior:{eye:[137,102,-152],look:[0,36,35],heading:'大巨蛋建築外觀 · 橢圓固定屋頂',mode:'EXTERIOR / FIXED ROOF'}
 };
 camera.position.set(...presets.overview.eye);controls.target.set(...presets.overview.look);camera.lookAt(controls.target);
 let tween=null,yaw=0,pitch=0,mouseDown=null;
-function toggleRoof(yes){state.roof=yes;dome.roof.visible=yes;dome.roofCutaway.visible=!yes;$('roof-flag').textContent=yes?'ON':'OFF';$('roof-toggle').classList.toggle('on',yes);}
+function toggleRoof(mode){state.roof=mode==='exterior';dome.roof.visible=mode==='exterior';dome.roofCutaway.visible=mode==='cutaway';dome.roofInterior.visible=mode==='inside';$('roof-flag').textContent=mode==='exterior'?'ON':mode==='inside'?'INSIDE':'OFF';$('roof-toggle').classList.toggle('on',state.roof);}
 function setButtons(key){document.querySelectorAll('.view-button').forEach(el=>el.classList.toggle('selected',el.id===`view-${key}`));}
 function move(mode){
  state.mode=mode;
@@ -116,21 +128,21 @@ function move(mode){
    const tier=taipeiDome.tiers.find(t=>t.id===state.level);
    const p=seatPosition(tier,state.section,state.row,state.seat);
    const radiusOffset=0.23;
-   eye=V(p.x-Math.sin(p.angle)*radiusOffset,p.y,p.z-Math.cos(p.angle)*radiusOffset);
-   target=V(0,3,-18);
-   title=`${state.level} · ${state.section} 區｜座位模擬`;
+   eye=V(p.x-p.nx*radiusOffset,p.y+1.60,p.z-p.nz*radiusOffset);
+   target=state.level.startsWith('OF')?V(0,3,12):V(0,4,38);
+   title=`${state.section} 區｜座位模擬`;
    modeLabel='FIRST-PERSON / SEAT VIEW';
-   toggleRoof(true);
+   toggleRoof('inside');
    dome.marker.visible=false;
    setButtons('none');
  }else{
    const preset=presets[mode];eye=V(...preset.eye);target=V(...preset.look);title=preset.heading;modeLabel=preset.mode;
-   if(mode==='overview')toggleRoof(false);else toggleRoof(true);
-   dome.marker.visible=true;
+   toggleRoof(mode==='exterior'?'exterior':'cutaway');
+   dome.marker.visible=mode!=='exterior';
    setButtons(mode);
  }
  $('mode-label').textContent=modeLabel;$('view-title').textContent=title;
- $('view-info').textContent=mode==='seat'?'拖曳四周環視 · 座位高度為估算':'拖曳旋轉 · 雙指縮放 · 點選看台';
+ $('view-info').textContent=mode==='seat'?'拖曳環視 · 排距與高度為估算':mode==='exterior'?'固定式橢圓屋頂 · 外觀比例參考官方資料':'拖曳旋轉 · 雙指縮放 · 點選 U 形看台';
  controls.enabled=false;
  const lookMatrix=new THREE.Matrix4().lookAt(eye,target,V(0,1,0));const quaternion=new THREE.Quaternion().setFromRotationMatrix(lookMatrix);
  tween={fromEye:camera.position.clone(),toEye:eye,fromQuat:camera.quaternion.clone(),toQuat:quaternion,target,mode,start:performance.now()};
@@ -144,8 +156,8 @@ for(const id of ['row','seat'])$(id).onchange=()=>{
 };
 $('go-seat').onclick=()=>move('seat');$('go-bowl').onclick=()=>move('overview');
 $('view-overview').onclick=()=>move('overview');$('view-plate').onclick=()=>move('plate');
-$('view-first').onclick=()=>move('first');$('view-outfield').onclick=()=>move('outfield');
-$('camera-reset').onclick=()=>move('overview');$('roof-toggle').onclick=()=>toggleRoof(!state.roof);
+$('view-first').onclick=()=>move('first');$('view-outfield').onclick=()=>move('outfield');$('view-exterior').onclick=()=>move('exterior');
+$('camera-reset').onclick=()=>move('overview');$('roof-toggle').onclick=()=>move(state.mode==='exterior'?'overview':'exterior');
 
 // Hit-test the *actual sector meshes* instead of picking the nearest guessed angle.
 const raycaster=new THREE.Raycaster(),mouse=new THREE.Vector2();

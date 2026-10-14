@@ -1,372 +1,379 @@
 import * as THREE from 'three';
-import {taipeiDome, listSections, sectionBounds, seatPosition} from './stadiums.js';
+import {taipeiDome,reference,listSections,sectionBounds,seatPosition,tierPoint,pathPoint,pathFrame} from './stadiums.js';
 
-// In-house, procedural 3D reconstruction. No third-party 3D models or textures.
-// Public floor plans anchor the section topology, not centimeter-accurate coordinates.
+// Every object is procedural original geometry. Geometry uses a U-shaped inner
+// baseball bowl and a SEPARATE shorter outfield stand; only the architectural
+// roof is an oval, because Taipei Dome's roof actually is oval.
 const V=(x,y,z)=>new THREE.Vector3(x,y,z);
 const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
-const matt=(hex,rough=0.88)=>new THREE.MeshStandardMaterial({color:hex,roughness:rough,metalness:0.08,side:THREE.DoubleSide});
-const basic=(hex,opacity=1)=>new THREE.MeshBasicMaterial({color:hex,transparent:opacity<1,opacity,side:THREE.DoubleSide,depthWrite:opacity===1});
+const mat=(color,metalness=0.02,roughness=.82)=>new THREE.MeshStandardMaterial({color,metalness,roughness,side:THREE.DoubleSide});
+const lit=(color,opacity=1)=>new THREE.MeshBasicMaterial({color,side:THREE.DoubleSide,transparent:opacity!==1,opacity,depthWrite:opacity===1});
+const concrete=mat(0x7c8583),paleConcrete=mat(0xc4c7c0),charcoal=mat(0x252b2c);
+const steel=mat(0x9da9ac,.6,.44),dirt=mat(0xb95639),grass=mat(0x367c46),chalk=lit(0xf6f4ec);
+const web=lit(0xd2dbd9,.34);
 
-const grass=matt(0x417e52), paleGrass=matt(0x458858), dirt=matt(0xb66f4c);
-const white=matt(0xf3eee2), concrete=matt(0x687779), darkConcrete=matt(0x263538);
-const steel=matt(0x839398,.5), fascia=matt(0x202f34);
+function add(parent,g,m,x=0,y=0,z=0){const o=new THREE.Mesh(g,m);o.position.set(x,y,z);parent.add(o);return o;}
+function box(parent,w,h,d,m,x=0,y=0,z=0){return add(parent,new THREE.BoxGeometry(w,h,d),m,x,y,z);}
+function ribbon(parent,one,two,m){const verts=[],idx=[];for(let i=0;i<one.length;i++)verts.push(...one[i],...two[i]);
+ for(let i=0;i<one.length-1;i++){const a=i*2;idx.push(a,a+1,a+2,a+1,a+3,a+2);}
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));g.setIndex(idx);g.computeVertexNormals();return add(parent,g,m);}
+function tube(parent,points,r,m,sections=64){const path=new THREE.CatmullRomCurve3(points);return add(parent,new THREE.TubeGeometry(path,sections,r,5),m);}
+function lines(parent,segments,color=0xe5e7df,opacity=1){const p=[];for(let [a,b] of segments)p.push(...a,...b);
+ const material=new THREE.LineBasicMaterial({color,transparent:opacity<1,opacity});
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(p,3));const o=new THREE.LineSegments(g,material);parent.add(o);return o;}
+function floorShape(parent,coords,y,m){const s=new THREE.Shape();s.moveTo(coords[0][0],coords[0][1]);for(let i=1;i<coords.length;i++)s.lineTo(...coords[i]);s.closePath();
+ const result=add(parent,new THREE.ShapeGeometry(s),m,0,y,0);result.rotation.x=Math.PI/2;return result;}
+function canvasLabel(text,sub=''){let c=document.createElement('canvas');c.width=1024;c.height=400;let x=c.getContext('2d');
+ x.fillStyle='#071a24';x.fillRect(0,0,1024,400);
+ x.fillStyle='#1e4a4e';for(let p=-400;p<1450;p+=58){x.save();x.translate(p,0);x.rotate(-.39);x.fillRect(0,-250,4,950);x.restore();}
+ x.fillStyle='#e8f6f6';x.textAlign='center';x.font='800 88px sans-serif';x.fillText(text,512,190);
+ x.fillStyle='#86d6bd';x.font='700 40px sans-serif';x.fillText(sub,512,284);
+ let t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;}
 
-function put(scene,geometry,material,x=0,y=0,z=0) {
- const mesh=new THREE.Mesh(geometry,material);mesh.position.set(x,y,z);
- mesh.receiveShadow=true;scene.add(mesh);return mesh;
-}
-function cuboid(scene,w,h,d,mat,x,y,z){return put(scene,new THREE.BoxGeometry(w,h,d),mat,x,y,z)}
-function horizontal(scene,shape,mat,y=0) {
- const mesh=put(scene,new THREE.ShapeGeometry(shape),mat,0,y,0);
- mesh.rotation.x=Math.PI/2;return mesh;
-}
-function shapeFrom(points){let s=new THREE.Shape();s.moveTo(points[0][0],points[0][1]);points.slice(1).forEach(p=>s.lineTo(p[0],p[1]));s.closePath();return s;}
-function lineSegments(scene,segments,mat){const verts=[];for(const [a,b] of segments){verts.push(...a,...b);}const m=new THREE.LineSegments(new THREE.BufferGeometry().setAttribute('position',new THREE.Float32BufferAttribute(verts,3)),mat);scene.add(m);return m;}
-function tube(scene,points,radius,material,segments=32) {const curve=new THREE.CatmullRomCurve3(points.map(p=>Array.isArray(p)?V(...p):p));return put(scene,new THREE.TubeGeometry(curve,segments,radius,5,false),material);}
-function arcSamples(start,end,count,func){return Array.from({length:count+1},(_,i)=>func(start+(end-start)*i/count,i));}
-
-const wallArc = theta => [70*Math.sin(theta), 28+53*Math.cos(theta)];
-
-function makeField(scene) {
- const root=new THREE.Group();scene.add(root);
- // Infield extends behind the baselines and has a more accurate 90-degree foul-line orientation.
- const home=[0,-42],right=[70,28],left=[-70,28];
- const arc=arcSamples(-Math.PI/2,Math.PI/2,60,a=>wallArc(a));
- const whole=shapeFrom([home,right,...arc.slice(1).reverse(),left]);
- // The warning track follows an irregular outfield arc, rather than a circular wall.
- horizontal(root,whole,dirt,.02);
- // Grass inset from wall, with radial strips inspired by the turf's mowing variations.
- const innerArc=arcSamples(-Math.PI/2,Math.PI/2,64,a=>[66.8*Math.sin(a),28+49.8*Math.cos(a)]);
- const green=shapeFrom([[0,-31],[66.8,27],...innerArc.slice(1).reverse(),[-66.8,27]]);
- horizontal(root,green,grass,.06);
- const wedgeMats=[grass,paleGrass];
- for(let i=0;i<16;i++) {
-  const a=-Math.PI/2+i*Math.PI/16,b=-Math.PI/2+(i+1)*Math.PI/16;
-  const points=[[0,-14],...arcSamples(a,b,6,q=>[66.8*Math.sin(q),28+49.8*Math.cos(q)])];
-  horizontal(root,shapeFrom(points),wedgeMats[i%2],.072);
- }
- // Skin: home to first, second, third. Grass interior leaves distinct red dirt baselines.
- horizontal(root,shapeFrom([[0,-42],[24.8,-22.4],[0,2.8],[-24.8,-22.4]]),dirt,.15);
- horizontal(root,shapeFrom([[0,-30],[13.5,-22.5],[0,-9],[-13.5,-22.5]]),grass,.185);
- // Dirt mound and home circle.
- let mound=put(root,new THREE.CylinderGeometry(3.85,3.85,.29,36),dirt,0,.29,-23.55);
- let plateDisk=put(root,new THREE.CylinderGeometry(5.3,5.3,.11,32),dirt,0,.16,-42);
- // Bases true baseball-diamond proportions, 27.43m side.
- const bases=[[0,-42],[19.4,-22.6],[0,-3.2],[-19.4,-22.6]];
- for(let i=0;i<bases.length;i++) {
-  const [x,z]=bases[i];const base=cuboid(root,i===0?1.2:1.45,.12,i===0?1.35:1.45,white,x,.27,z);base.rotation.y=Math.PI/4;
- }
- // Chalk, foul lines, batter boxes, pitch rubber.
- const chalk=new THREE.LineBasicMaterial({color:0xfcf5e5});
- lineSegments(root,[[[0,.31,-42],[70,.31,28]],[[0,.31,-42],[-70,.31,28]],[[19.4,.32,-22.6],[0,.32,-3.2]],[[-19.4,.32,-22.6],[0,.32,-3.2]]],chalk);
- for(const sign of [-1,1]){
-  lineSegments(root,[ [[sign*2.3,.27,-47],[sign*2.3,.27,-40.3]],[[sign*4.8,.27,-47],[sign*4.8,.27,-40.3]],[[sign*2.3,.27,-47],[sign*4.8,.27,-47]] ],chalk);
- }
- cuboid(root,.65,.09,.19,white,0,.45,-23.6);
- // Warning-track/outfield wall follows only the outfield arc; yellow cap.
- const panels=[];
- for(let i=0;i<80;i++) {
-  const a=-Math.PI/2+i*Math.PI/80,b=-Math.PI/2+(i+1)*Math.PI/80;
-  const [x1,z1]=wallArc(a),[x2,z2]=wallArc(b);
-  const d=Math.hypot(x2-x1,z2-z1),angle=Math.atan2(x2-x1,z2-z1);
-  const wall=cuboid(root,d+.10,7.5,.75,matt(i%7===0?0x1d514a:0x194941), (x1+x2)/2,3.9,(z1+z2)/2);
-  wall.rotation.y=angle+Math.PI/2;
-  const cap=cuboid(root,d+.12,.21,.9,matt(0xd4b54d),(x1+x2)/2,7.72,(z1+z2)/2);
-  cap.rotation.y=wall.rotation.y;
-  panels.push(wall);
- }
- // Foul poles at left and right field.
- for(const s of [-1,1]) {
-   const pole=cuboid(root,.2,23,.2,matt(0xe4c830),s*70,11.5,28);
-   pole.castShadow=false;
-   for(let z=2;z<20;z+=2) { // sparse grid on the pole
-     cuboid(root,.15,.12,2.3,matt(0xe4c830),s*70,z,28);
-   }
- }
- // Dark dugouts adjacent to home plate; entrances open toward turf.
- for(const sign of [-1,1]) {
-  const x=sign*41;
-  cuboid(root,25,2.3,8,matt(0x203436),x,1.17,-46);
-  cuboid(root,25,.45,8,matt(0x536569),x,2.6,-46);
-  cuboid(root,24,1.0,.3,matt(0x17272b),x,.80,-50);
- }
- // Simple human scale references on the field, not real teams or live play.
- const personShirt=matt(0xf7e9d6),personPants=matt(0x1d3037);
- [[0,-23.5],[-20,-22.5],[20,-22.5],[0,-3],[-46,37],[45,34],[0,61]].forEach(([x,z])=>{
-  const g=new THREE.Group();root.add(g);g.position.set(x,.2,z);
-  g.add(new THREE.Mesh(new THREE.CylinderGeometry(.33,.4,1.25,5),personPants));g.children[0].position.y=1;
-  const shirt=new THREE.Mesh(new THREE.CylinderGeometry(.48,.43,.77,6),personShirt);shirt.position.y=1.9;g.add(shirt);
-  const head=new THREE.Mesh(new THREE.SphereGeometry(.29,7,5),matt(0xb98663));head.position.y=2.55;g.add(head);
+// One curved arc, *not* a circular sector. Curve interpolation stays in the
+// stadium-specific data module, making field wall and outfield seats concentric
+// only where the top-down official plan says they should be.
+function sampled(tier,depth,a,b,num=40){let v=[];for(let i=0;i<=num;i++){
+ const p=tierPoint(tier,a+(b-a)*i/num,depth);v.push([p.x,p.y,p.z]);
+ }return v;}
+function makeFloor(scene){
+ const world=new THREE.Group();scene.add(world);
+ box(world,211,1,259,mat(0x232d30),0,-2,30);
+ // Real Taipei Dome has broad reddish-orange foul territory, particularly
+ // behind home. The grass polygon is NOT a green circular disk.
+ floorShape(world,[[-82,83],[-86,30],[-72,-5],[-48,-34],[0,-48],[48,-34],[72,-5],[86,30],[82,83],[55,125],[0,143],[-55,125]],-.02,dirt);
+ const wallPoints=Array.from({length:101},(_,i)=>pathPoint('wall',i/100));
+ // Official overhead photography shows green turf around the infield and home
+ // plate, with a red *perimeter* track. It is NOT a red infield wedge.
+ const turfFront=Array.from({length:101},(_,i)=>{
+  const p=pathFrame('infield',i/100);return [p.x-p.nx*5.8,p.z-p.nz*5.8];
  });
- return root;
+ floorShape(world,[...wallPoints.map(p=>[p.x,p.z]),...turfFront.reverse()],.045,grass);
+ // Outfield warning track, set inside the measured wall profile.
+ const wallOuter=[],wallInner=[];
+ for(let i=0;i<=90;i++){
+  const t=i/90,p=pathFrame('wall',t);
+  wallOuter.push([p.x,.08,p.z]);wallInner.push([p.x-p.nx*4.7,.085,p.z-p.nz*4.7]);
+ }
+ ribbon(world,wallOuter,wallInner,dirt);
+ // Foul lines run 335 ft from home to the corner flags.
+ tube(world,[V(0,.20,0),V(72.2,.20,72.2)],.09,chalk,2);
+ tube(world,[V(0,.20,0),V(-72.2,.20,72.2)],.09,chalk,2);
+ const baseLocations=[[0,0],[19.4,19.4],[0,38.79],[-19.4,19.4]];
+ for(let [idx,[x,z]] of baseLocations.entries()){
+  let p=add(world,new THREE.CylinderGeometry(idx===0?4.5:3.1,idx===0?4.5:3.1,.13,8),dirt,x,.14,z);p.rotation.y=Math.PI/8;
+  let b=box(world,idx===0?1.07:1.35,.12,idx===0?1.07:1.35,mat(0xf0eee6),x,.33,z);b.rotation.y=Math.PI/4;
+ }
+ const mound=add(world,new THREE.CylinderGeometry(3.1,3.1,.34,40),dirt,0,.25,18.44);
+ box(world,.55,.1,.2,mat(0xfaf8ed),0,.46,18.44);
+ // Catcher's boxes and small batting boxes, only visible at close range.
+ const chalkSegments=[];
+ for(let s of [-1,1]){
+  const x0=s*1.7,x1=s*3.5;
+  chalkSegments.push([[x0,.26,-2.35],[x0,.26,1.4]],[[x1,.26,-2.35],[x1,.26,1.4]],[[x0,.26,-2.35],[x1,.26,-2.35]],[[x0,.26,1.4],[x1,.26,1.4]]);
+ }
+ lines(world,chalkSegments,0xfaf8f1);
+ // Proper 3.5m outfield wall rather than the old 7.5m cylinder.
+ for(let i=0;i<92;i++){
+  const a=pathPoint('wall',i/92),b=pathPoint('wall',(i+1)/92);let len=Math.hypot(b.x-a.x,b.z-a.z);
+  const angle=Math.atan2(b.z-a.z,b.x-a.x);
+  const obj=box(world,len+.10,3.5,.43,mat(i%9===0?0x234d48:0x164a43),(a.x+b.x)/2,1.75,(a.z+b.z)/2);obj.rotation.y=-angle;
+  const cap=box(world,len+.12,.10,.62,mat(0xe5c850),(a.x+b.x)/2,3.52,(a.z+b.z)/2);cap.rotation.y=obj.rotation.y;
+ }
+ for(let sign of [-1,1]){
+  box(world,.14,21,.14,mat(0xf8d023),sign*72.2,12,72.2);
+  // triangular warning markings help see the foul pole from the bowl.
+  for(let y=6;y<20;y+=3)box(world,.10,.06,2.4,mat(0xf8d023),sign*72.2,y,73.4);
+ }
+ // Dugouts and railings follow the sides of the *diamond*, not a round ring.
+ for(let sign of [-1,1]){
+  let dug=box(world,22,2.5,8,mat(0x263a3a),sign*29,1.3,-15);
+  dug.rotation.y=sign*.38;
+  let ledge=box(world,23,.4,8,mat(0x959e99),sign*29,2.6,-15);ledge.rotation.y=sign*.38;
+  const rail=box(world,20,.08,.1,steel,sign*28,3.2,-11.7);rail.rotation.y=sign*.38;
+ }
+ // The actual 2024+ stadium uses Mizuno artificial turf; no artificial
+ // all-dirt infield diamond is painted over it.
+ return world;
 }
 
-// Curved tier stair-stepping: backs/riser surfaces, gaps at section boundaries,
-// white/gray individual chair instances, catwalks and guardrails.
-function sectionTierGeometry(tier,a0,a1) {
- const vertices=[];const indices=[];let idx=0;
- const addQuad=(a,b,c,d)=>{
-  vertices.push(...a,...b,...c,...d);
-  indices.push(idx,idx+1,idx+2,idx,idx+2,idx+3);idx+=4;
+function tierSectionMesh(tier,a,b){
+ const v=[],idx=[];let n=0;
+ const append=(p0,p1,p2,p3)=>{
+  v.push(...p0,...p1,...p2,...p3);idx.push(n,n+1,n+2,n,n+2,n+3);n+=4;
  };
- const angularDivisions=Math.max(3,Math.ceil((a1-a0)*52));
- for(let row=0;row<tier.rows;row++) {
-  const outer=row+1,inner=row;
-  const y=tier.floor+row*tier.rise;
-  const lastY=tier.floor+(row+1)*tier.rise;
-  for(let i=0;i<angularDivisions;i++) {
-   const a=a0+(a1-a0)*i/angularDivisions, b=a0+(a1-a0)*(i+1)/angularDivisions;
-   const p=(ang,depth,h)=>[Math.sin(ang)*(tier.rx+depth*tier.pitch),h,tier.centerZ+Math.cos(ang)*(tier.rz+depth*tier.pitch)];
-   addQuad(p(a,inner,y),p(b,inner,y),p(b,outer,y),p(a,outer,y));
-   // risers give actual separate rows rather than a continuous inclined plane.
-   addQuad(p(a,outer,y),p(b,outer,y),p(b,outer,lastY),p(a,outer,lastY));
+ let steps=Math.max(3,Math.ceil((b-a)*90));
+ for(let row=0;row<tier.rows;row++){
+  for(let j=0;j<steps;j++){
+   const u=a+(b-a)*j/steps,w=a+(b-a)*(j+1)/steps;
+   const i0=tierPoint(tier,u,row*tier.pitch),i1=tierPoint(tier,w,row*tier.pitch);
+   const o0=tierPoint(tier,u,(row+1)*tier.pitch),o1=tierPoint(tier,w,(row+1)*tier.pitch);
+   const top0=[i0.x,i0.y,i0.z],top1=[i1.x,i1.y,i1.z];
+   const top2=[o1.x,i1.y,o1.z],top3=[o0.x,i0.y,o0.z];
+   append(top0,top1,top2,top3);
+   append(top3,top2,[o1.x,o1.y,o1.z],[o0.x,o0.y,o0.z]);
   }
  }
- const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(vertices,3));g.setIndex(indices);g.computeVertexNormals();return g;
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(v,3));g.setIndex(idx);g.computeVertexNormals();return g;
 }
-
-function createSeatInstances(scene,chairs) {
- const seatGeo=new THREE.BoxGeometry(.69,.19,.66),backGeo=new THREE.BoxGeometry(.72,.71,.11);
- const base=new THREE.InstancedMesh(seatGeo,matt(0xffffff),chairs.length);
- const backs=new THREE.InstancedMesh(backGeo,matt(0xffffff),chairs.length);
- base.instanceMatrix.setUsage(THREE.StaticDrawUsage);backs.instanceMatrix.setUsage(THREE.StaticDrawUsage);
- const dummy=new THREE.Object3D(),col=new THREE.Color();
- for(let i=0;i<chairs.length;i++) {
-   const seat=chairs[i];
-   // Rotation aligns all chairs toward the field regardless of the ellipse tangent.
-   dummy.rotation.set(0,seat.a,0);
-   dummy.position.set(seat.x,seat.y+.39,seat.z);
-   dummy.updateMatrix();base.setMatrixAt(i,dummy.matrix);
-   const rad=seat.rx+seat.r*seat.pitch,dep=seat.rz+seat.r*seat.pitch;
-   const outX=Math.sin(seat.a)*.36,outZ=Math.cos(seat.a)*.36;
-   dummy.position.set(seat.x+outX,seat.y+.80,seat.z+outZ);
-   dummy.updateMatrix();backs.setMatrixAt(i,dummy.matrix);
-   // Color blocking resembles the white/charcoal irregular rows seen at Taipei Dome.
-   const hash=((i*179+seat.section*41+seat.r*17)%101);
-   let hex=hash<11?0x25363b:hash<30?0x788b8f:hash<59?0xbdcbd0:0xf0f1e9;
-   if(seat.tier==='L3') hex=hash<30?0x2c363b:0xa5aaa5;
-   col.setHex(hex);base.setColorAt(i,col);backs.setColorAt(i,col);
- }
- base.instanceMatrix.needsUpdate=true;backs.instanceMatrix.needsUpdate=true;
- if(base.instanceColor)base.instanceColor.needsUpdate=true;
- if(backs.instanceColor)backs.instanceColor.needsUpdate=true;
- base.frustumCulled=false;backs.frustumCulled=false;
- scene.add(base,backs);
+function groupSeats(parent,chairs){
+ const seatGeo=new THREE.BoxGeometry(.65,.12,.52),backGeo=new THREE.BoxGeometry(.67,.66,.10);
+ // Use GPU instancing to fit iPad/iPhone Safari. No 20,000 separate draw calls.
+ const base=new THREE.InstancedMesh(seatGeo,mat(0xffffff),chairs.length),backs=new THREE.InstancedMesh(backGeo,mat(0xffffff),chairs.length);
+ const obj=new THREE.Object3D(),color=new THREE.Color();
+ chairs.forEach((c,i)=>{
+  const yaw=Math.atan2(c.nx,c.nz),rand=((i*97+c.section*37+c.row*23)%101);
+  let hex=rand<14?0x26343b:rand<34?0x828e92:rand<51?0xbcc3c6:0xeaece8;
+  // Black/white seat mosaic in photos, with darker suite-level chairs.
+  if(c.tier==='VIP')hex=rand<62?0x344247:0xc2c7c6;
+  obj.rotation.set(0,yaw,0);obj.position.set(c.x,c.y+.32,c.z);obj.updateMatrix();base.setMatrixAt(i,obj.matrix);
+  obj.position.set(c.x+c.nx*.31,c.y+.71,c.z+c.nz*.31);obj.updateMatrix();backs.setMatrixAt(i,obj.matrix);
+  color.setHex(hex);base.setColorAt(i,color);backs.setColorAt(i,color);
+ });
+ base.frustumCulled=false;backs.frustumCulled=false;parent.add(base,backs);
  return chairs.length;
 }
-
-function makeStands(scene) {
- const tiers=taipeiDome.tiers, hitMeshes=[], meshBySection=new Map(), chairs=[];
- const tierMaterial=[matt(0x5a676a),matt(0x606c6d),matt(0x484f52),matt(0x586364),matt(0x596569)];
- for (const [k,tier] of tiers.entries()) {
-  // Structural concourse below each tier, following real inner/outer arcs.
-  for(const band of tier.bands) {
-   const a0=band.start,a1=band.end;const segments=70;
-   const verts=[],indices=[];
-   for(let i=0;i<=segments;i++){
-    let a=a0+(a1-a0)*i/segments;
-    const rx=tier.rx+(.1)*tier.pitch,rz=tier.rz+(.1)*tier.pitch;
-    verts.push(rx*Math.sin(a),tier.floor-3.5,tier.centerZ+rz*Math.cos(a),rx*Math.sin(a),tier.floor+.1,tier.centerZ+rz*Math.cos(a));
-   }
-   for(let i=0;i<segments;i++){let n=2*i;indices.push(n,n+1,n+2,n+1,n+3,n+2);}
-   const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(verts,3));g.setIndex(indices);g.computeVertexNormals();
-   put(scene,g,fascia);
-   // Handrails/guardrail on front of the next deck.
-   const points=arcSamples(a0,a1,80,a=>V((tier.rx+.65)*Math.sin(a),tier.floor+1.0,tier.centerZ+(tier.rz+.65)*Math.cos(a)));
-   tube(scene,points,.115,steel,110);
-  }
-  for(const section of listSections(tier)) {
-    const bounds=sectionBounds(tier,section);
-    if(!bounds)continue;
-    const gap=Math.min(.014,(bounds[1]-bounds[0])*.10);
-    const [a0,a1]=[bounds[0]+gap,bounds[1]-gap];
-    const geo=sectionTierGeometry(tier,a0,a1);
-    const mesh=put(scene,geo,tierMaterial[k]);
-    mesh.userData={tier:tier.id,section};
-    meshBySection.set(`${tier.id}-${section}`,mesh);hitMeshes.push(mesh);
-    for(let row=0;row<tier.rows;row++) {
-      const rad=tier.rx+(row+.5)*tier.pitch,dep=tier.rz+(row+.5)*tier.pitch;
-      const amid=(a0+a1)/2;
-      const tangent=Math.hypot(rad*Math.cos(amid),dep*Math.sin(amid));
-      const count=clamp(Math.floor((a1-a0)*tangent/1.45),2,22);
-      for(let j=0;j<count;j++) {
-        let a=a0+(a1-a0)*(j+.5)/count;
-        chairs.push({x:rad*Math.sin(a),y:tier.floor+row*tier.rise,
-          z:tier.centerZ+dep*Math.cos(a),a,section,r:row,rx:tier.rx,rz:tier.rz,pitch:tier.pitch,tier:tier.id});
-      }
-    }
-    // Vertical concrete aisle walls at section split points.
-    if(section%3===0){
-      const a=bounds[1];const d0=tier.rx-1,d1=tier.rx+tier.rows*tier.pitch;
-      lineSegments(scene,[[[d0*Math.sin(a),tier.floor+.3,tier.centerZ+(tier.rz-1)*Math.cos(a)],
-        [d1*Math.sin(a),tier.floor+(tier.rows-1)*tier.rise+.3,tier.centerZ+(tier.rz+tier.rows*tier.pitch)*Math.cos(a)]]],
-        new THREE.LineBasicMaterial({color:0xe1e3d7}));
-    }
-  }
- }
- const numChairs=createSeatInstances(scene,chairs);
- return {hitMeshes,meshBySection,numChairs};
-}
-
-function makeVideoTexture() {
- const c=document.createElement('canvas');c.width=1024;c.height=448;const ctx=c.getContext('2d');
- const grd=ctx.createLinearGradient(0,0,1024,448);grd.addColorStop(0,'#10292a');grd.addColorStop(.5,'#123f3c');grd.addColorStop(1,'#0a1f28');
- ctx.fillStyle=grd;ctx.fillRect(0,0,c.width,c.height);
- ctx.strokeStyle='#337966';ctx.lineWidth=4;for(let i=0;i<12;i++){ctx.beginPath();ctx.moveTo(i*100-200,0);ctx.lineTo(i*100+100,448);ctx.stroke();}
- ctx.textAlign='center';ctx.fillStyle='#a9dfca';ctx.font='bold 34px sans-serif';ctx.fillText('TAIPEI DOME',512,102);
- ctx.fillStyle='#ffffff';ctx.font='900 102px sans-serif';ctx.fillText('FIELDVIEW',512,227);
- ctx.fillStyle='#91e6c7';ctx.font='bold 38px sans-serif';ctx.fillText('BASEBALL / 3D',512,303);
- ctx.font='25px sans-serif';ctx.fillStyle='#d6e6e1';ctx.fillText('SEAT VIEW · INDEPENDENT RECONSTRUCTION',512,376);
- const tex=new THREE.CanvasTexture(c);tex.colorSpace=THREE.SRGBColorSpace;tex.anisotropy=4;return tex;
-}
-
-function makeArchitecture(scene) {
+function stands(scene){
  const group=new THREE.Group();scene.add(group);
- // Actual Taipei Dome has a massive scoreboard on the tall *outfield* end wall.
- // Faceted perimeter follows the grandstand sweep rather than a perfect circle.
- const backWallMat=matt(0x687473),skinMat=matt(0x909796);
- for(let i=0;i<36;i++) {
-  const a=-Math.PI/2+i*Math.PI/36,b=-Math.PI/2+(i+1)*Math.PI/36;
-  const rx=148,rz=147,cz=16;
-  let x1=rx*Math.sin(a),z1=cz+rz*Math.cos(a),x2=rx*Math.sin(b),z2=cz+rz*Math.cos(b);
-  let d=Math.hypot(x2-x1,z2-z1),wall=cuboid(group,d+.2,35,2,backWallMat,(x1+x2)/2,65,(z1+z2)/2);
-  wall.rotation.y=Math.atan2(x2-x1,z2-z1)+Math.PI/2;
-  if(i%4===0) {
-   const column=cuboid(group,1.65,44,2.3,skinMat,x1,59,z1);
-   column.rotation.y=wall.rotation.y;
+ const chairs=[],hitMeshes=[],bySection=new Map();
+ const deck=[mat(0x6c7473),mat(0x667174),mat(0x747d7b),mat(0x64706e),mat(0x3f4b4d),mat(0x7d8584),mat(0x818a88)];
+ const voidMat=mat(0x283236);
+ for(let [k,tier] of taipeiDome.tiers.entries()){
+  // Continuous base band per tier, but NEVER connect infield and outfield
+  // decks into a single circular ring.
+  const t0=tier.t0,t1=tier.t1;
+  const baseInner=sampled(tier,0,t0,t1,105).map(p=>[p[0],p[1]-3.1,p[2]]);
+  const baseOuter=sampled(tier,.25,t0,t1,105);ribbon(group,baseInner,baseOuter,voidMat);
+  const railing=sampled(tier,-.40,t0,t1,90).map(p=>V(p[0],p[1]+1.2,p[2]));
+  tube(group,railing,.067,steel,105);
+  for(let n of listSections(tier)){
+   const limits=sectionBounds(tier,n);if(!limits)continue;
+   const gap=.0018,b0=limits[0]+gap,b1=limits[1]-gap;
+   const geometry=tierSectionMesh(tier,b0,b1);
+   const obj=add(group,geometry,deck[k]);obj.userData={tier:tier.id,section:n};
+   hitMeshes.push(obj);bySection.set(`${tier.id}-${n}`,obj);
+   const mid=(b0+b1)*.5,pa=tierPoint(tier,b0,0),pb=tierPoint(tier,b1,0);
+   const sectionLength=Math.hypot(pa.x-pb.x,pa.z-pb.z);
+   const cols=clamp(Math.floor(sectionLength/.89),5,24);
+   // Steps and aisles are open gaps between actual sectors.
+   for(let r=0;r<tier.rows;r++)for(let j=0;j<cols;j++){
+    const t=b0+(b1-b0)*(j+.5)/cols,p=tierPoint(tier,t,(r+.53)*tier.pitch);
+    chairs.push({x:p.x,z:p.z,y:p.y,section:n,row:r,tier:tier.id,nx:p.nx,nz:p.nz});
+   }
+   if((n-tier.first)%4===0){
+    const edge=sampled(tier,tier.rows*tier.pitch,b0,b1,8);
+    tube(group,edge.map(p=>V(p[0],p[1]+.15,p[2])),.105,paleConcrete,10);
+   }
   }
+  // Level separation: distinctly different front fascias and exterior strips.
+  const low=sampled(tier,-.15,t0,t1,110).map(p=>[p[0],p[1]-2.1,p[2]]);
+  const upper=sampled(tier,-.15,t0,t1,110);
+  ribbon(group,low,upper,k===4?charcoal:mat(0xa2ada9));
+  // Pedestrian concourse separating the stadium's real seating tiers.
+  const high=sampled(tier,tier.rows*tier.pitch,t0,t1,105);
+  const back=sampled(tier,tier.rows*tier.pitch+1.6,t0,t1,105);
+  ribbon(group,high,back,concrete);
  }
- // Center field scoreboard + scoreboard light trays (as in photos).
- cuboid(group,66,31,2.8,matt(0x111d23),0,58.5,161.3);
- const face=put(group,new THREE.PlaneGeometry(60,26.5),new THREE.MeshBasicMaterial({map:makeVideoTexture(),side:THREE.DoubleSide}),0,58.5,159.5);
- // A plane front faces -Z by default; camera behind home at negative Z.
- face.rotation.y=Math.PI;
- for(let s of [-1,1]) {
-  const secondary=cuboid(group,16,10,1.6,matt(0x162b31),s*100,42,118);
-  const sc=put(group,new THREE.PlaneGeometry(13,7),new THREE.MeshBasicMaterial({color:0x32605c,side:THREE.DoubleSide}),s*100,42,116.9);sc.rotation.y=s*.35;
+ const chairCount=groupSeats(group,chairs);
+ return {group,chairCount,hitMeshes,bySection};
+}
+
+function glassRibbon(parent,y,z,halfWidth,height){
+ let g=box(parent,halfWidth*2,height,.32,mat(0x25434b,.15,.25),0,y,z);return g;
+}
+function arenaWalls(scene){
+ const group=new THREE.Group();scene.add(group);
+ const warmGrey=mat(0x989d98),ivory=mat(0xc0c3be),dark=mat(0x273238);
+ // Tall flat/polygonal center-field end wall as seen in real 2023–26 photos:
+ // it must NOT be the back half of an enclosed gray seating donut.
+ const anchors=[[-72,106],[-66,128],[-48,146],[-24,155],[0,156],[24,155],[48,146],[66,128],[72,106]];
+ for(let i=0;i<anchors.length-1;i++){
+  const a=anchors[i],b=anchors[i+1],d=Math.hypot(b[0]-a[0],b[1]-a[1]);
+  const s=box(group,d+.25,21,1.7,warmGrey,(a[0]+b[0])/2,38,(a[1]+b[1])/2);
+  s.rotation.y=-Math.atan2(b[1]-a[1],b[0]-a[0]);
+  const upper=box(group,d+.3,1.6,2.0,ivory,(a[0]+b[0])/2,49.4,(a[1]+b[1])/2);
+  upper.rotation.y=s.rotation.y;
+  const band=box(group,d+.4,1.15,2.3,dark,(a[0]+b[0])/2,28.0,(a[1]+b[1])/2);band.rotation.y=s.rotation.y;
  }
- // Outer concourse and heavy piers; upper bowl is concentrated behind home plate.
- for(let i=0;i<46;i++){
-  const a=-Math.PI/2+i*Math.PI*2/46;
-  const x=195*Math.sin(a),z=16+189*Math.cos(a);
-  cuboid(group,2.0,52,2.6,matt(0x657175),x,25,z);
+ // Scoreboard on the rear center-field wall with lower central camera booth.
+ const boardBody=box(group,34,19,1.7,mat(0x101920),0,43.0,153.3);
+ box(group,35,.62,2.1,ivory,0,53.0,153.3);
+ const scr=add(group,new THREE.PlaneGeometry(31,15),new THREE.MeshBasicMaterial({map:canvasLabel('TAIPEI DOME','BASEBALL · FIELDVIEW 3D'),side:THREE.DoubleSide}),0,43.6,151.95);
+ // Screens face the field (toward -Z).
+ const booth=box(group,23,6.0,4.2,mat(0x151c20),0,30.4,149);
+ glassRibbon(group,31,146.75,10,3.8);
+ for(let side of [-1,1]){
+  const x=side*69;
+  box(group,13,9.0,1.3,mat(0x111d21),x,27,121);
+  const sideScreen=add(group,new THREE.PlaneGeometry(11.3,6.8),new THREE.MeshBasicMaterial({map:canvasLabel('FIELDVIEW','LIVE · TAIPEI'),side:THREE.DoubleSide}),x,27,120.2);
  }
- for(const y of [24,37,45,61,78]){
-  for(let j=0;j<70;j++){
-    const a=-Math.PI/2+j*Math.PI*2/70;
-    const b=a+Math.PI*2/70;
-    const x1=190*Math.sin(a),z1=16+182*Math.cos(a),x2=190*Math.sin(b),z2=16+182*Math.cos(b);
-    const seg=cuboid(group,Math.hypot(x2-x1,z2-z1)+.3,1.25,3.2,matt(0x48565a),(x1+x2)/2,y,(z1+z2)/2);
-    seg.rotation.y=Math.atan2(x2-x1,z2-z1)+Math.PI/2;
-  }
+ // Outfield pavilion: catwalks and narrow dark suite glazing, not more upper stands.
+ for(let y of [27,30,34]){
+  const z=145+(y-27)*.20;
+  box(group,123,.85,2.1,y===30?ivory:dark,0,y,z);
  }
- // Gate portals on both first/third base sides, distinctly below the bowl.
- for(const sign of [-1,1]){
-  const x=sign*183;
-  const portal=cuboid(group,22,11,3,matt(0x102529),x,8,6);
-  cuboid(group,24,1.25,4,matt(0x97a1a2),x,14,6);
+ for(let x=-64;x<=64;x+=8){
+  box(group,.44,11,.7,mat(0x6c8183,.25),x,27,145);
+ }
+ // Field-side lower corridor/advertising ribbon can be seen behind the wall.
+ for(let sign of [-1,1]){
+  const sideStrip=box(group,24,3.6,1.2,dark,sign*60,17,114);
+  sideStrip.rotation.y=sign*.51;
+ }
+ // Piers and horizontal circulation decks outside the infield. Plan is U only.
+ const u=taipeiDome.tiers[2];
+ for(let t=.03;t<=.98;t+=.062){
+  const p=tierPoint(u,t,36);
+  box(group,1.7,18,1.7,mat(0x7d8785),p.x,18,p.z);
  }
  return group;
 }
 
-function roofHeight(x,z){const k=(x/209)**2+((z-16)/201)**2;return 78+56*Math.sqrt(Math.max(0,1-k));}
-function makeRoof(scene) {
- const roof=new THREE.Group();scene.add(roof);
- const meshVerts=[],meshIndices=[];
- const div=70,rings=30;
- for(let r=0;r<=rings;r++) {
-  const v=r/rings,rx=208*v,rz=200*v;
-  for(let i=0;i<=div;i++) {
-    const a=i/div*Math.PI*2,x=rx*Math.sin(a),z=16+rz*Math.cos(a);
-    meshVerts.push(x,roofHeight(x,z),z);
+// Fixed roof: Taipei Dome does NOT have a retractable roof. Cross-section
+// plan approx 170 x 230m, internal peak roughly 68m above the playing surface.
+const ROOF={rx:88,rz:118,centerZ:39,rim:50,apex:68};
+function roofY(x,z){
+ const k=(x/ROOF.rx)**2+((z-ROOF.centerZ)/ROOF.rz)**2;
+ return ROOF.rim+(ROOF.apex-ROOF.rim)*Math.sqrt(Math.max(0,1-k));
+}
+function makeRoof(scene){
+ const roof=new THREE.Group(),cutaway=new THREE.Group(),inside=new THREE.Group();scene.add(roof,cutaway,inside);
+ const steelM=mat(0xb9c6c4,.54,.46),shellM=mat(0xa0acae,.7,.48);
+ // Outside, use a very shallow metallic-oval roof shell, matching aerial photos.
+ const v=[],idx=[];const rings=25,N=110;
+ for(let r=0;r<=rings;r++)for(let i=0;i<=N;i++){
+  const s=r/rings,theta=2*Math.PI*i/N,x=ROOF.rx*s*Math.sin(theta),z=ROOF.centerZ+ROOF.rz*s*Math.cos(theta);
+  v.push(x,roofY(x,z),z);
+ }
+ for(let r=0;r<rings;r++)for(let i=0;i<N;i++){
+  let a=r*(N+1)+i,b=a+N+1;idx.push(a,b,a+1,a+1,b,b+1);
+ }
+ const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.Float32BufferAttribute(v,3));g.setIndex(idx);g.computeVertexNormals();add(roof,g,shellM);
+ // Facade beneath the silver roof, with alternating horizontal glazed bands.
+ for(let i=0;i<N;i++){
+  const a=2*Math.PI*i/N,b=2*Math.PI*(i+1)/N;
+  const x1=ROOF.rx*Math.sin(a),x2=ROOF.rx*Math.sin(b);
+  const z1=ROOF.centerZ+ROOF.rz*Math.cos(a),z2=ROOF.centerZ+ROOF.rz*Math.cos(b);
+  const width=Math.hypot(x2-x1,z2-z1)+.25,yaw=-Math.atan2(z2-z1,x2-x1);
+  for(const [mid,h,m] of [[13,17,mat(0x68797b,.39)],[26,7,mat(0x7eaaa9,.42,.21)],[37,15,mat(0xa7b2b0,.64)]]){
+   const panel=box(roof,width,h,1.2,m,(x1+x2)/2,mid,(z1+z2)/2);panel.rotation.y=yaw;
   }
  }
- for(let r=0;r<rings;r++)for(let i=0;i<div;i++){
-  const k=r*(div+1)+i,l=k+div+1;meshIndices.push(k,l,k+1,k+1,l,l+1);
+ // Concentric flattened roof panel seams visible in aerial photographs.
+ for(let s of [.38,.68,.88,.997]){
+  const pts=[];for(let i=0;i<=120;i++){
+   const a=i/120*2*Math.PI,x=ROOF.rx*s*Math.sin(a),z=ROOF.centerZ+ROOF.rz*s*Math.cos(a);
+   pts.push(V(x,roofY(x,z)+.11,z));
+  }
+  tube(roof,pts,.075,steelM,128);
  }
- const geo=new THREE.BufferGeometry();geo.setAttribute('position',new THREE.Float32BufferAttribute(meshVerts,3));geo.setIndex(meshIndices);geo.computeVertexNormals();
- const shell=new THREE.Mesh(geo,basic(0x48585e,.37));roof.add(shell);
- // A rectilinear diagonal steel-truss grid, approximating the conspicuous Taipei Dome ceiling.
- const lineMat=new THREE.LineBasicMaterial({color:0x9ca8ac,transparent:true,opacity:.80});
- let beams=[];
- for(let u=-185;u<=185;u+=13) {
-  let lim=200*Math.sqrt(Math.max(0,1-(u/209)**2));
-  let pts=arcSamples(-lim,lim,45,z=>[u,roofHeight(u,z+16)-1.6,z+16]);
-  for(let j=0;j<pts.length-1;j++)beams.push([pts[j],pts[j+1]]);
+ // Structural diagrid inside. NOT radial wheel spokes: the contractor built
+ // thousands of crisscrossing tubular steel members in a doubly-curved grid.
+ const segments=[],interiorColor=0xc7d1cf;
+ // Divide roofing in x/z stripes and cross diagonals. Trim cutaway above
+ // center field so the field is never obscured in the overview.
+ for(let x=-83;x<=83;x+=7.3){
+  const lim=ROOF.rz*Math.sqrt(Math.max(0,1-(x/ROOF.rx)**2));
+  let a=Math.max(ROOF.centerZ-3,ROOF.centerZ-lim),b=ROOF.centerZ+lim;if(a>=b)continue;
+  let prev=null;for(let j=0;j<=45;j++){
+   const z=a+(b-a)*j/45,p=[x,roofY(x,z)-1.25,z];if(prev)segments.push([prev,p]);prev=p;
+  }
  }
- for(let v=-183;v<=183;v+=13){
-  let lim=209*Math.sqrt(Math.max(0,1-(v/201)**2));
-  let pts=arcSamples(-lim,lim,45,x=>[x,roofHeight(x,v+16)-1.6,v+16]);
-  for(let j=0;j<pts.length-1;j++)beams.push([pts[j],pts[j+1]]);
+ for(let z=ROOF.centerZ-3;z<ROOF.centerZ+ROOF.rz;z+=7.5){
+  const lim=ROOF.rx*Math.sqrt(Math.max(0,1-((z-ROOF.centerZ)/ROOF.rz)**2));
+  let prev=null;for(let j=0;j<=45;j++){
+   const x=-lim+2*lim*j/45,p=[x,roofY(x,z)-1.25,z];if(prev)segments.push([prev,p]);prev=p;
+  }
  }
- lineSegments(roof,beams,lineMat);
- // Thicker long-span ribs form the oval arch instead of radial wheel spokes.
- for(let v=-158;v<=158;v+=40){
-   let lim=209*Math.sqrt(1-(v/201)**2);
-   tube(roof,arcSamples(-lim,lim,36,x=>V(x,roofHeight(x,v+16)-.7,v+16)),.56,steel,60);
+ // Diagonal trusses make the signature crisscross ceiling visible in photographs.
+ for(let d=-160;d<=160;d+=14){
+  for(let polarity of [-1,1]){
+   let prev=null;
+   for(let x=-86;x<=86;x+=3.1){
+    const z=ROOF.centerZ+58+polarity*x*.80+d*.28;
+    if((x/ROOF.rx)**2+((z-ROOF.centerZ)/ROOF.rz)**2>.96||z<ROOF.centerZ-5){prev=null;continue;}
+    let p=[x,roofY(x,z)-1.8,z];if(prev)segments.push([prev,p]);prev=p;
+   }
+  }
  }
- for(let u=-145;u<=145;u+=48){
-   let lim=201*Math.sqrt(1-(u/209)**2);
-   tube(roof,arcSamples(-lim,lim,36,z=>V(u,roofHeight(u,z+16)-.7,z+16)),.44,steel,60);
+ lines(cutaway,segments,interiorColor,.80);
+ for(let z=38;z<=139;z+=24){
+  const cap=ROOF.rx*Math.sqrt(Math.max(0,1-((z-ROOF.centerZ)/ROOF.rz)**2));
+  if(!cap)continue;
+  let pts=[];for(let j=0;j<=42;j++){
+   let x=-cap+2*cap*j/42;pts.push(V(x,roofY(x,z)-1.45,z));
+  }
+  tube(cutaway,pts,.32,steel,56);
  }
- return roof;
+ // Auditorium floodlights on the underside of the long steel span.
+ const lights=lit(0xf4f5ed);
+ for(let z of [42,83,118])for(let x=-68;x<=68;x+=12){
+  if((x/ROOF.rx)**2+((z-ROOF.centerZ)/ROOF.rz)**2>.88)continue;
+  add(cutaway,new THREE.SphereGeometry(.49,8,6),lights,x,roofY(x,z)-3,z);
+ }
+ // Dense continuous ceiling truss for first-person views. The exterior skin
+ // remains hidden in the auditorium so it cannot occlude the playing field.
+ const interior=[];
+ for(let x=-83;x<=83;x+=8.2){
+  const lim=ROOF.rz*Math.sqrt(Math.max(0,1-(x/ROOF.rx)**2));
+  let prev=null;for(let j=0;j<=90;j++){
+   const z=ROOF.centerZ-lim+2*lim*j/90,p=[x,roofY(x,z)-1.1,z];
+   if(prev)interior.push([prev,p]);prev=p;
+  }
+ }
+ for(let z=ROOF.centerZ-116;z<=ROOF.centerZ+116;z+=8.2){
+  const lim=ROOF.rx*Math.sqrt(Math.max(0,1-((z-ROOF.centerZ)/ROOF.rz)**2));
+  let prev=null;for(let j=0;j<=64;j++){
+   const x=-lim+2*lim*j/64,p=[x,roofY(x,z)-1.1,z];
+   if(prev)interior.push([prev,p]);prev=p;
+  }
+ }
+ for(let offset=-120;offset<=120;offset+=16){
+  for(let slope of [-.77,.77]){
+   let prev=null;for(let x=-85;x<=85;x+=3.4){
+    const z=ROOF.centerZ+offset+slope*x;
+    if((x/ROOF.rx)**2+((z-ROOF.centerZ)/ROOF.rz)**2>.97){prev=null;continue;}
+    const point=[x,roofY(x,z)-1.62,z];
+    if(prev)interior.push([prev,point]);prev=point;
+   }
+  }
+ }
+ lines(inside,interior,0xd6dfe0,.87);
+ for(let z=-34;z<130;z+=22){
+  const lim=ROOF.rx*Math.sqrt(Math.max(0,1-((z-ROOF.centerZ)/ROOF.rz)**2));
+  if(lim<3)continue;
+  const pts=[];for(let i=0;i<=36;i++){
+   const x=-lim+2*lim*i/36;pts.push(V(x,roofY(x,z)-1.5,z));
+  }
+  tube(inside,pts,.29,steel,50);
+ }
+ for(let z of [-26,19,65,111])for(let x=-72;x<=72;x+=12){
+  const k=(x/ROOF.rx)**2+((z-ROOF.centerZ)/ROOF.rz)**2;
+  if(k<.89)add(inside,new THREE.SphereGeometry(.55,8,6),lit(0xeceee9),x,roofY(x,z)-2.4,z);
+ }
+ roof.visible=false;cutaway.visible=true;inside.visible=false;
+ return {roof,cutaway,inside};
 }
+function marker(scene){const g=new THREE.Group();scene.add(g);
+ const ring=add(g,new THREE.TorusGeometry(1.4,.17,7,32),lit(0x55ffc8));ring.rotation.x=Math.PI/2;
+ add(g,new THREE.SphereGeometry(.55,10,8),lit(0xf0fff6),0,.3,0);
+ box(g,.18,5,.18,lit(0x64ffdc,.4),0,3.0,0);return g;}
 
-// From outside the roof, keep only a rear cutaway lattice visible so viewers can
-// read the recognizable arched ceiling without hiding the ballpark below.
-function makeRoofCutaway(scene) {
- const half=new THREE.Group();scene.add(half);
- const color=new THREE.LineBasicMaterial({color:0x99adb1,transparent:true,opacity:.72});
- const fragments=[];
- for(let x=-188;x<=188;x+=16) {
-  let edge=201*Math.sqrt(Math.max(0,1-(x/209)**2));
-  let from=Math.max(18,-edge),to=edge;
-  if(to<=from)continue;
-  const points=arcSamples(from,to,35,z=>[x,roofHeight(x,z+16),z+16]);
-  for(let i=0;i<points.length-1;i++)fragments.push([points[i],points[i+1]]);
- }
- for(let z=22;z<=191;z+=16){
-  const edge=209*Math.sqrt(Math.max(0,1-(z/201)**2));
-  let points=arcSamples(-edge,edge,46,x=>[x,roofHeight(x,z+16),z+16]);
-  for(let i=0;i<points.length-1;i++)fragments.push([points[i],points[i+1]]);
- }
- lineSegments(half,fragments,color);
- return half;
-}
-
-function makeSelectedMarker(scene) {
- const marker=new THREE.Group();scene.add(marker);
- const ring=new THREE.Mesh(new THREE.TorusGeometry(2.25,.29,8,30),basic(0x25ffe0));ring.rotation.x=Math.PI/2;marker.add(ring);
- const light=new THREE.Mesh(new THREE.SphereGeometry(.75,12,8),new THREE.MeshBasicMaterial({color:0xd2fff5}));marker.add(light);
- const beam=new THREE.Mesh(new THREE.CylinderGeometry(.12,.12,7,7),basic(0x68ffe4,.57));beam.position.y=4;marker.add(beam);
- return marker;
-}
-
-function makeAccent(scene) {
- const floor=new THREE.Mesh(new THREE.PlaneGeometry(470,480),matt(0x111b20));floor.rotation.x=-Math.PI/2;floor.position.set(0,-3.7,15);scene.add(floor);
- const marker=makeSelectedMarker(scene);
- return marker;
-}
-
-export function buildTaipeiDome(scene) {
- const marker=makeAccent(scene);
- makeField(scene);
- const stands=makeStands(scene);
- makeArchitecture(scene);
- const roof=makeRoof(scene);
- const roofCutaway=makeRoofCutaway(scene);
- roof.visible=false;roofCutaway.visible=true;
- const selectionMat=new THREE.MeshBasicMaterial({color:0x37f5bc,transparent:true,opacity:.28,side:THREE.DoubleSide,depthWrite:false,polygonOffset:true,polygonOffsetFactor:-1});
+export function buildTaipeiDome(scene){
+ makeFloor(scene);
+ const stand=stands(scene);
+ const walls=arenaWalls(scene);
+ const {roof,cutaway,inside}=makeRoof(scene);
+ const focus=marker(scene);
  let highlight=null;
+ const pickMat=new THREE.MeshBasicMaterial({color:0x60f9ba,opacity:.33,transparent:true,depthWrite:false,side:THREE.DoubleSide,polygonOffset:true,polygonOffsetFactor:-2});
  function select(level,section,row=8,seat=8){
-  if(highlight){scene.remove(highlight);highlight.geometry.dispose();highlight=null;}
-  const mesh=stands.meshBySection.get(`${level}-${section}`);
-  if(mesh){highlight=new THREE.Mesh(mesh.geometry.clone(),selectionMat);scene.add(highlight);}
-  const tier=taipeiDome.tiers.find(t=>t.id===level);
-  const pos=tier?seatPosition(tier,section,row,seat):null;
-  if(pos)marker.position.set(pos.x,pos.y+.2,pos.z);
-  return pos;
+  if(highlight){scene.remove(highlight);highlight=null;}
+  const tier=taipeiDome.tiers.find(t=>t.id===level),shape=stand.bySection.get(`${level}-${section}`);
+  if(shape){highlight=new THREE.Mesh(shape.geometry,pickMat);scene.add(highlight);}
+  const p=tier?seatPosition(tier,section,row,seat):null;
+  if(p)focus.position.set(p.x,p.y+.2,p.z);
+  return p;
  }
- return {roof,roofCutaway,marker,select,hitMeshes:stands.hitMeshes,chairs:stands.numChairs};
+ return {roof,roofCutaway:cutaway,roofInterior:inside,marker:focus,select,hitMeshes:stand.hitMeshes,chairs:stand.chairCount};
 }

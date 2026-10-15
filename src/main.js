@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+const V = (x,y,z) => new THREE.Vector3(x,y,z);
 import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
 import {taipeiDome,listSections,sectionBounds,seatPosition,sectionSide,sectionRegion,approxSeatCount} from './stadiums.js';
 import {buildTaipeiDome} from './dome.js';

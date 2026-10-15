@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover" />
+  <meta name="theme-color" content="#0b1419" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>FIELDVIEW 3D｜啟動診斷</title>
+  <style>
+    html,body{margin:0;min-height:100%;background:#0b1419;color:#e9f5f2;font-family:system-ui,-apple-system,sans-serif}
+    #boot-diagnostic{position:relative;z-index:2147483647;max-width:680px;margin:12vh auto;padding:28px;box-sizing:border-box}
+    #boot-diagnostic h1{font-size:32px;margin:0 0 16px}
+    #boot-status{color:#b8c9c7;line-height:1.6;overflow-wrap:anywhere}
+    #boot-details{white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px;color:#ffc6c6;line-height:1.5}
+    #boot-diagnostic.failed{background:#301b22;border:1px solid #d66c7b;border-radius:14px}
+    @media(max-width:700px){#boot-diagnostic{margin:8vh 16px;padding:20px}}
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="boot-diagnostic">
+      <h1>FIELDVIEW 3D</h1>
+      <p>臺北大巨蛋 · V0.3.2 啟動診斷</p>
+      <p id="boot-status">正在載入網站程式…</p>
+      <pre id="boot-details"></pre>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var started = Date.now();
+      var errors = [];
+      function report(kind, message) {
+        errors.push(kind + ': ' + String(message || '未知錯誤'));
+        var panel = document.getElementById('boot-diagnostic');
+        var status = document.getElementById('boot-status');
+        var details = document.getElementById('boot-details');
+        // The app may already have replaced the placeholder; provide a persistent error panel.
+        if (!panel) {
+          panel = document.createElement('div');
+          panel.id = 'boot-diagnostic';
+          document.body.appendChild(panel);
+          panel.innerHTML = '<h1>FIELDVIEW 3D</h1><p id="boot-status"></p><pre id="boot-details"></pre>';
+          status = document.getElementById('boot-status');
+          details = document.getElementById('boot-details');
+        }
+        panel.classList.add('failed');
+        status.textContent = '啟動失敗，請截圖以下錯誤訊息';
+        details.textContent = errors.join('\n\n');
+      }
+      window.addEventListener('error', function (event) {
+        if (event.target && event.target !== window) {
+          report('RESOURCE_ERROR', event.target.src || event.target.href || event.target.tagName);
+        } else {
+          report('JS_ERROR', (event.message || 'Script error') + ' @ ' + (event.filename || '?') + ':' + (event.lineno || '?'));
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (event) {
+        report('PROMISE_ERROR', event.reason && (event.reason.stack || event.reason.message) || event.reason);
+      });
+      window.addEventListener('DOMContentLoaded', function () {
+        var status = document.getElementById('boot-status');
+        if (status) status.textContent = 'HTML 已載入，等待 JavaScript 初始化…';
+      });
+      window.setTimeout(function () {
+        var status = document.getElementById('boot-status');
+        if (status && !errors.length) {
+          report('TIMEOUT', '12 秒內沒有完成啟動。可能是模組載入失敗、執行卡住或 WebGL 初始化失敗。經過 ' + Math.round((Date.now()-started)/1000) + ' 秒。');
+        }
+      }, 12000);
+    })();
+  </script>
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>

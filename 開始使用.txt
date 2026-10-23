@@ -1,0 +1,19 @@
+FIELDVIEW 3D V0.4 — 全新 GitHub Repository 專用
+
+1. GitHub 新增「空白」Repository，建議名稱 fieldview-dome。
+2. 解壓縮這份 ZIP，把裡面的檔案及資料夾放到 Repository 根目錄。
+   必須包含 .github/workflows/deploy-pages.yml；不要只上傳 ZIP。
+3. 到 Settings → Pages → Source，選 GitHub Actions。
+4. 到 Actions 確認 Build and Deploy FIELDVIEW 3D 變綠色勾勾。
+5. 點 Settings → Pages → Visit site 開啟網頁測試。
+
+修正重點：
+- Vite 資源路徑採相對網址 ./，不依賴 Repo 名稱。
+- 僅有一個 GitHub Actions 部署流程；避免舊 Jekyll 覆蓋。
+- 自動檢查打包後的 JS/CSS，阻擋未編譯 three 模組。
+- 含 V0.4 3D 模型、護欄、座位視角三種鏡頭與 A/B 快速比較。
+
+本地測試：13/13 通過、所有 JS 語法通過、部署檢查正常阻擋錯誤入口。
+尚待驗證：GitHub 上的 npm install / Vite build、iPhone Safari 真實 3D 渲染。
+
+詳情參閱 README.md。
